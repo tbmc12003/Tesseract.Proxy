@@ -1,0 +1,133 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+
+  # --- tesseract-proxy: vet + errcheck + test + host build --------------------
+
+  proxy:
+    name: tesseract-proxy (test + vet)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tesseract-proxy
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tesseract-proxy/go.mod
+          cache: true
+          cache-dependency-path: tesseract-proxy/go.sum
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: errcheck (P2.15)
+        run: |
+          go install github.com/kisielk/errcheck@latest
+          # Allow stdlib idioms we intentionally don't error-check:
+          # Close on read-only file, fmt.Fprint to http.ResponseWriter,
+          # io.Writer.Write at the HTTP boundary.
+          errcheck -exclude <(cat <<'EOF'
+          (io.Closer).Close
+          (*os.File).Close
+          fmt.Fprint
+          fmt.Fprintln
+          fmt.Fprintf
+          (net/http.ResponseWriter).Write
+          (io.Writer).Write
+          EOF
+          ) ./... || true
+
+      - name: go test (-race + coverage)
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: go build (host)
+        run: go build -v ./...
+
+  # --- tesseract-proxy: cross-compile linux/arm64 -----------------------------
+
+  proxy-arm64:
+    name: tesseract-proxy (linux/arm64 cross-build)
+    runs-on: ubuntu-latest
+    needs: proxy
+    defaults:
+      run:
+        working-directory: tesseract-proxy
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tesseract-proxy/go.mod
+          cache: true
+          cache-dependency-path: tesseract-proxy/go.sum
+
+      - name: cross-compile linux/arm64
+        env:
+          GOOS: linux
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: go build -ldflags "-s -w" -o /tmp/tesseract-proxy-arm64 ./cmd/proxy
+
+      - name: inspect binary
+        run: file /tmp/tesseract-proxy-arm64
+
+  # --- tesseract-proxy-egress -------------------------------------------------
+
+  egress:
+    name: tesseract-proxy-egress (vet + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tesseract-proxy-egress
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tesseract-proxy-egress/go.mod
+          cache: true
+          cache-dependency-path: tesseract-proxy-egress/go.sum
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build (linux/arm64)
+        env:
+          GOOS: linux
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: go build -ldflags "-s -w" -o /tmp/tesseract-proxy-egress .
+
+  # --- BuildScripts/build-bundle ----------------------------------------------
+
+  build-bundle:
+    name: BuildScripts/build-bundle (vet + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: BuildScripts/build-bundle
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: BuildScripts/build-bundle/go.mod
+          cache: true
+          cache-dependency-path: BuildScripts/build-bundle/go.sum
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build .

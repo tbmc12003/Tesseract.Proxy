@@ -1,0 +1,137 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  Provisions a Lightsail nano in ap-south-1 + a static IP and installs
+  tesseract-proxy from a release tarball URL.
+
+  This template runs in YOUR AWS account (BYOC model). Nothing Equinomics
+  controls lives in here. After the stack completes, the static IP is
+  output — that's the value you whitelist with each broker.
+
+Parameters:
+
+  TarballURL:
+    Type: String
+    Description: >
+      HTTPS URL of the tesseract-proxy release tarball
+      (e.g. a GitHub release asset URL). The user-data script
+      downloads, sha256-verifies, untars and runs install.sh.
+    AllowedPattern: ^https://.+\.tar\.gz$
+
+  TarballSHA256:
+    Type: String
+    Description: >
+      Expected sha256 of the tarball. user-data refuses to install if
+      the download doesn't match.
+    AllowedPattern: ^[0-9a-fA-F]{64}$
+
+  AvailabilityZone:
+    Type: String
+    Default: ap-south-1a
+    AllowedValues: [ap-south-1a, ap-south-1b, ap-south-1c]
+    Description: ap-south-1a is the default — co-located with NSE/BSE matching engines and most broker DCs.
+
+  InstanceBundle:
+    Type: String
+    Default: nano_3_0
+    AllowedValues: [nano_3_0, micro_3_0, small_3_0]
+    Description: Lightsail bundle. nano_3_0 (₹290/mo) is sized per arch §3.
+
+  KeyPairName:
+    Type: String
+    Default: ""
+    Description: >
+      Lightsail SSH key pair to attach for one-time bootstrap.
+      Leave empty to disable SSH entirely (recommended after first
+      install — break-glass only).
+
+  AllowedSourceCIDR:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: >
+      Inbound 443/tcp source CIDR. Default is open-internet (the proxy's
+      mTLS gate handles auth). Narrow this if you want a defense-in-depth
+      network ACL on top of mTLS — e.g. your home ISP block.
+
+Resources:
+
+  ProxyInstance:
+    Type: AWS::Lightsail::Instance
+    Properties:
+      InstanceName: tesseract-proxy
+      AvailabilityZone: !Ref AvailabilityZone
+      BlueprintId: amazon_linux_2023
+      BundleId: !Ref InstanceBundle
+      KeyPairName: !If [HasKeyPair, !Ref KeyPairName, !Ref AWS::NoValue]
+      Networking:
+        Ports:
+          - FromPort: 443
+            ToPort: 443
+            Protocol: tcp
+            AccessDirection: inbound
+            CommonName: tesseract-proxy-https
+            Cidrs:
+              - !Ref AllowedSourceCIDR
+      UserData: !Sub |
+        #!/bin/bash
+        set -euo pipefail
+        exec > >(tee /var/log/tesseract-proxy-bootstrap.log) 2>&1
+
+        echo "==> tesseract-proxy bootstrap starting at $(date -Iseconds)"
+
+        # AL2023 ships dnf + tar; need openssl for sig verify (already there).
+        dnf install -y tar gzip openssl
+
+        cd /tmp
+        echo "==> downloading tarball"
+        curl -fsSL "${TarballURL}" -o proxy.tar.gz
+
+        echo "==> verifying sha256"
+        echo "${TarballSHA256}  proxy.tar.gz" | sha256sum -c -
+
+        echo "==> extracting + installing"
+        tar xzf proxy.tar.gz
+        cd tesseract-proxy-*-linux-arm64
+        ./install.sh
+
+        echo "==> bootstrap complete. operator must now drop certs +"
+        echo "    edit /etc/tesseract-proxy/proxy.conf.yaml + systemctl start."
+
+  ProxyStaticIp:
+    Type: AWS::Lightsail::StaticIp
+    DeletionPolicy: Retain
+    Properties:
+      StaticIpName: tesseract-proxy-ip
+      AttachedTo: !Ref ProxyInstance
+
+Conditions:
+  HasKeyPair: !Not [!Equals [!Ref KeyPairName, ""]]
+
+Outputs:
+  StaticIPAddress:
+    Description: >
+      The static IPv4 address to whitelist with each broker. Survives
+      reboots, restarts, and AMI swaps because of DeletionPolicy=Retain
+      on the StaticIp resource. If you delete this stack the static IP
+      stays allocated until you delete it explicitly via the Lightsail
+      console — preventing accidental loss of your broker-whitelisted IP
+      (arch §15.13).
+    Value: !GetAtt ProxyStaticIp.IpAddress
+    Export:
+      Name: !Sub ${AWS::StackName}-StaticIP
+
+  InstanceName:
+    Description: Lightsail instance name (for `aws lightsail get-instance`).
+    Value: !Ref ProxyInstance
+
+  NextSteps:
+    Description: What to do after the stack completes.
+    Value: !Sub |
+      1. Note the static IP above — whitelist it with each broker.
+      2. SSH in (using KeyPairName): `ssh ec2-user@<ip>`.
+      3. Copy your mTLS material into /etc/tesseract-proxy/certs/.
+      4. Edit /etc/tesseract-proxy/proxy.conf.yaml (allowed_*_serials).
+      5. `sudo systemctl enable --now tesseract-proxy`.
+      6. (Optional, recommended) close inbound 22 once you're done with
+         bootstrap: AWS::Lightsail::Instance Networking does not directly
+         support that — use `aws lightsail close-instance-public-ports`.

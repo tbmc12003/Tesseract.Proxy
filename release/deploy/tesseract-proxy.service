@@ -1,0 +1,88 @@
+[Unit]
+Description=Tesseract Order Pass-Through Proxy
+Documentation=https://github.com/equinomics/tesseract-proxy
+# Network and the local clock must be up — the bundle CDN is on the public
+# internet and TLS certs need plausible time.
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+# Type=simple: ExecStart binary runs in the foreground. We don't yet wire
+# sd_notify (Type=notify); that lands when systemd-readiness is needed
+# (e.g. ordering after a database). For a self-contained proxy with
+# Restart=on-failure, simple is correct.
+Type=simple
+
+User=tesseract-proxy
+Group=tesseract-proxy
+
+ExecStart=/opt/tesseract-proxy/proxy --config /etc/tesseract-proxy/proxy.conf.yaml
+
+# SIGHUP: re-read operator config + audit log handle, fire one bundle tick.
+# SIGUSR1: force an immediate bundle poll (skip the next interval wait).
+# Both are wired in cmd/proxy/main.go.
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Re-exec on its own failure; systemd takes care of bringing the new
+# binary up after binupd.Receiver.Apply has swapped it on disk.
+Restart=on-failure
+RestartSec=2
+
+# --- Hardening -------------------------------------------------------------
+# arch §7 trust model: single-user, no shared state. The proxy needs:
+#   r/w on  /var/log/tesseract-proxy  (audit log)
+#   r/w on  /etc/tesseract-proxy/profiles  (bundle stage + previous)
+#   r/o on  /etc/tesseract-proxy/certs    (server + CA keys)
+#   r/o on  /etc/tesseract-proxy/pubkey   (signing pubkeys)
+#   r/o on  /etc/tesseract-proxy/proxy.conf.yaml
+#   r/w on  /opt/tesseract-proxy          (current/previous/staged binary)
+# Everything else is read-only or hidden.
+
+ProtectSystem=strict
+ReadOnlyPaths=/etc/tesseract-proxy/certs /etc/tesseract-proxy/pubkey /etc/tesseract-proxy/proxy.conf.yaml
+ReadWritePaths=/var/log/tesseract-proxy /etc/tesseract-proxy/profiles /opt/tesseract-proxy
+
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectClock=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+NoNewPrivileges=true
+
+# We don't need CAP_NET_ADMIN: the nftables ruleset is applied by the
+# tesseract-proxy-egress companion (separate unit) which has elevated
+# privileges. The proxy itself drops everything.
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @cpu-emulation @obsolete @debug
+
+# Network: TCP/UDP outbound + inbound. No raw sockets.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Resource bounds — arch §3 sizing analysis. 512 MB box; the proxy itself
+# is well under 100 MB resident. 256 MB MemoryMax leaves headroom for
+# burst allocations during bundle reloads without permitting a memory
+# leak to consume the whole box.
+MemoryMax=256M
+TasksMax=128
+LimitNOFILE=8192
+
+# Logging: stdout/stderr go to the journal; the audit log is a separate
+# file written via internal/audit.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

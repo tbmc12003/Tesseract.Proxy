@@ -1,0 +1,5 @@
+# Static bundle header. bundle_version and issued_at are injected at
+# build time by cmd/build-bundle.
+schema_version: 1
+issuer: equinomics
+min_proxy_version: 0.4.0

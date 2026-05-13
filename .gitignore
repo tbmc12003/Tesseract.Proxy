@@ -1,0 +1,38 @@
+# Per-module .gitignore handles module-specific build artifacts. This
+# file carries patterns shared across all three modules.
+
+# Go build outputs anywhere in the tree.
+*.exe
+*.test
+*.out
+coverage
+coverage.*
+**/bin/
+
+# Binaries named after the module (Go puts the binary at the module root
+# when `go build` is run without -o, named after the module's last path
+# segment).
+tesseract-proxy/proxy
+tesseract-proxy/tesseract-proxy
+tesseract-proxy-egress/tesseract-proxy-egress
+BuildScripts/build-bundle/build-bundle
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Secrets / certs — never commit, anywhere in the tree.
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+
+# Local overrides
+*.local.yaml
+*.local.toml
+*.local.json

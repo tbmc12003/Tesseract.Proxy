@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://equinomics.in/schemas/tesseract-broker-profile.schema.json",
+  "title": "Tesseract Broker Profile",
+  "description": "One broker entry under brokers[]. Schema mirrors internal/profile.BrokerProfile (arch §13.2/§13.6).",
+  "type": "object",
+  "required": ["id", "display_name", "host", "enabled", "order_endpoints", "idempotency", "rate_limit"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{1,31}$",
+      "description": "Lowercase identifier; matches proxy validator brokerIDRe."
+    },
+    "display_name": { "type": "string", "minLength": 1 },
+    "host": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$",
+      "description": "Dotted literal hostname. No wildcards, no raw IPs."
+    },
+    "enabled": { "type": "boolean" },
+    "order_endpoints": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["method", "path", "kind"],
+        "additionalProperties": false,
+        "properties": {
+          "method": { "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+          "path": {
+            "type": "string",
+            "pattern": "^/[A-Za-z0-9_./~\\-{}]*$",
+            "description": "Allowlist path. {var} placeholders only — no regex specials."
+          },
+          "kind": {
+            "enum": [
+              "place", "modify", "cancel",
+              "place_multi", "modify_multi", "cancel_multi",
+              "place_multileg", "exit", "exit_positions",
+              "cancel_cover", "cancel_bracket"
+            ]
+          }
+        }
+      }
+    },
+    "idempotency": {
+      "type": "object",
+      "required": ["client_order_id_header", "client_order_id_body_path", "echo_in_response_path"],
+      "additionalProperties": false,
+      "properties": {
+        "client_order_id_header":    { "type": "string" },
+        "client_order_id_body_path": { "type": "string" },
+        "echo_in_response_path":     { "type": "string" }
+      }
+    },
+    "rate_limit": {
+      "type": "object",
+      "required": ["per_user_rps", "per_user_burst"],
+      "additionalProperties": false,
+      "properties": {
+        "per_user_rps":   { "type": "integer", "minimum": 0 },
+        "per_user_burst": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

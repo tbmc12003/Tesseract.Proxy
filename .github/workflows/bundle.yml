@@ -1,0 +1,62 @@
+name: bundle
+
+# Runs only when the bundle source, the build tool, or the proxy's strict
+# loader changes — because those are the surfaces that affect whether a
+# bundle parses cleanly end-to-end.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tesseract-proxy-config/**'
+      - 'BuildScripts/build-bundle/**'
+      - 'tesseract-proxy/internal/profile/**'
+      - 'tesseract-proxy/cmd/verify-bundle/**'
+      - '.github/workflows/bundle.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'tesseract-proxy-config/**'
+      - 'BuildScripts/build-bundle/**'
+      - 'tesseract-proxy/internal/profile/**'
+      - 'tesseract-proxy/cmd/verify-bundle/**'
+      - '.github/workflows/bundle.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-and-roundtrip:
+    name: schema + build + sign + strict-loader round-trip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: install jv (JSON Schema validator)
+        run: go install github.com/santhosh-tekuri/jsonschema/cmd/jv@latest
+
+      - name: schema-validate each broker YAML
+        working-directory: tesseract-proxy-config
+        run: make validate
+
+      - name: generate dev signing key
+        working-directory: tesseract-proxy-config
+        run: make test-keys
+
+      - name: build + sign bundle (dev key)
+        working-directory: tesseract-proxy-config
+        run: make sign SIGNER_KEY=test.key
+
+      # Same-repo round-trip: the bundle just produced must parse against
+      # the proxy's strict loader (signature + schema + version gates).
+      # Before consolidation this was a cross-repo TODO; now it's a one-liner.
+      - name: round-trip verify against proxy strict loader
+        working-directory: tesseract-proxy
+        run: |
+          go run ./cmd/verify-bundle \
+              -bundle ../tesseract-proxy-config/bundle.yaml \
+              -sig    ../tesseract-proxy-config/bundle.yaml.sig \
+              -pubkey ../tesseract-proxy-config/test.key.pub

@@ -1,0 +1,54 @@
+# Fyers API v3 — production broker profile.
+#
+# Endpoint paths verified 2026-05-13 against the official SDK:
+#   fyers-apiv3 v3.1.12 (PyPI)
+#   local copy: tmp/sdks/fyers/fyers_apiv3/fyersModel.py
+#
+# Production base URL:
+#   Config.API = "https://api-t1.fyers.in/api/v3"
+#
+# Endpoint paths in Config (relative to base):
+#   orders_endpoint     = "/orders/sync"        # POST/PATCH/DELETE → place/modify/cancel
+#   multi_orders        = "/multi-order/sync"   # POST/DELETE       → basket place/cancel
+#   multileg_orders     = "/multileg/orders/sync" # POST            → multileg place
+#   positions           = "/positions"          # DELETE            → exit_positions
+#
+# GTT (`/gtt/orders/sync`) and smart-order endpoints are deliberately
+# omitted from v1 — they can be added via PR per arch §13.3 once they
+# are exercised by Tesseract.
+#
+# Idempotency + rate_limit blocks are advisory metadata; the proxy itself
+# does not consume them.
+id: fyers
+display_name: Fyers
+host: api-t1.fyers.in
+enabled: true
+order_endpoints:
+  - method: POST
+    path: /api/v3/orders/sync
+    kind: place
+  - method: PATCH
+    path: /api/v3/orders/sync
+    kind: modify
+  - method: DELETE
+    path: /api/v3/orders/sync
+    kind: cancel
+  - method: POST
+    path: /api/v3/multi-order/sync
+    kind: place_multi
+  - method: DELETE
+    path: /api/v3/multi-order/sync
+    kind: cancel_multi
+  - method: POST
+    path: /api/v3/multileg/orders/sync
+    kind: place_multileg
+  - method: DELETE
+    path: /api/v3/positions
+    kind: exit_positions
+idempotency:
+  client_order_id_header: ""
+  client_order_id_body_path: $.orderTag
+  echo_in_response_path: id
+rate_limit:
+  per_user_rps: 10
+  per_user_burst: 20

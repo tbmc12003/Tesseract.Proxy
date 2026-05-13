@@ -1,0 +1,44 @@
+# KotakNeo (Kotak Securities Trade API) — production broker profile.
+#
+# Endpoint paths verified 2026-05-13 against the official SDK:
+#   github.com/Kotak-Neo/Kotak-neo-api-v2 (tag v2.0.1)
+#   local copy: tmp/sdks/neo/neo_api_client/{settings.py,api/order_api.py,
+#               api/modify_order_api.py,urls.py}
+#
+# Production gateway:
+#   Config.PROD_BASE_URL_GW_NAPI = "https://gw-napi.kotaksecurities.com/"
+#
+# The "_napi" suffix on settings.PROD_URL keys is what the SDK routes to
+# this gateway. All five order-mutating endpoints are POST.
+#
+# Idempotency + rate_limit blocks are advisory metadata for bundle authors
+# and Tesseract integration — the proxy itself does NOT consume them
+# (the cache + rate-limit layers were removed 2026-05-13 in favour of
+# true streaming pass-through).
+id: kotakneo
+display_name: Kotak Neo
+host: gw-napi.kotaksecurities.com
+enabled: true
+order_endpoints:
+  - method: POST
+    path: /Orders/2.0/quick/order/rule/ms/place
+    kind: place
+  - method: POST
+    path: /Orders/2.0/quick/order/vr/modify
+    kind: modify
+  - method: POST
+    path: /Orders/2.0/quick/order/cancel
+    kind: cancel
+  - method: POST
+    path: /Orders/2.0/quick/order/co/exit
+    kind: cancel_cover
+  - method: POST
+    path: /Orders/2.0/quick/order/bo/exit
+    kind: cancel_bracket
+idempotency:
+  client_order_id_header: ""
+  client_order_id_body_path: ""
+  echo_in_response_path: data.orderNumber
+rate_limit:
+  per_user_rps: 5
+  per_user_burst: 10

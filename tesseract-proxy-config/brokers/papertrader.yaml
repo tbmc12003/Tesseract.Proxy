@@ -1,0 +1,23 @@
+# PaperTrader — internal test broker.
+# Production bundles MUST ship this with `enabled: false`.
+id: papertrader
+display_name: PaperTrader (Test)
+host: papertrader.local
+enabled: false
+order_endpoints:
+  - method: POST
+    path: /Orders/2.0/quick/order/rule/ms/place
+    kind: place
+  - method: POST
+    path: /Orders/2.0/quick/order/vr/modify
+    kind: modify
+  - method: POST
+    path: /Orders/2.0/quick/order/cancel
+    kind: cancel
+idempotency:
+  client_order_id_header: X-Client-Order-Id
+  client_order_id_body_path: ""
+  echo_in_response_path: data.orderNumber
+rate_limit:
+  per_user_rps: 100
+  per_user_burst: 200

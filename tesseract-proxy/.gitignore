@@ -1,0 +1,29 @@
+# Built binaries
+/proxy
+/proxy.exe
+/bin/
+/dist/
+
+# Test artifacts
+*.test
+*.out
+coverage
+coverage.*
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local config overrides
+*.local.yaml
+*.local.toml
+
+# Secrets / certs (never commit)
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
