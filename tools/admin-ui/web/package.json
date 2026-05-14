@@ -1,0 +1,16 @@
+{
+  "name": "tesseract-admin-ui-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --watch"
+  },
+  "dependencies": {
+    "preact": "^10.22.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.23.0"
+  }
+}
