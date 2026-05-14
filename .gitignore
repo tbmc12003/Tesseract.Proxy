@@ -36,3 +36,8 @@ secrets/
 *.local.yaml
 *.local.toml
 *.local.json
+
+# Release artifacts — built by scripts/build-tarball.sh, kept outside the
+# git repo (see ../releases/ in the workspace).
+*.tar.gz
+*.tar.gz.sha256
