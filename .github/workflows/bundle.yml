@@ -1,24 +1,24 @@
 name: bundle
 
 # Runs only when the bundle source, the build tool, or the proxy's strict
-# loader changes — because those are the surfaces that affect whether a
-# bundle parses cleanly end-to-end.
+# loader changes — those are the surfaces that affect whether a bundle
+# parses cleanly end-to-end.
 on:
   push:
     branches: [main]
     paths:
       - 'tesseract-proxy-config/**'
-      - 'BuildScripts/build-bundle/**'
-      - 'tesseract-proxy/internal/profile/**'
+      - 'tesseract-proxy/cmd/build-bundle/**'
       - 'tesseract-proxy/cmd/verify-bundle/**'
+      - 'tesseract-proxy/internal/profile/**'
       - '.github/workflows/bundle.yml'
   pull_request:
     branches: [main]
     paths:
       - 'tesseract-proxy-config/**'
-      - 'BuildScripts/build-bundle/**'
-      - 'tesseract-proxy/internal/profile/**'
+      - 'tesseract-proxy/cmd/build-bundle/**'
       - 'tesseract-proxy/cmd/verify-bundle/**'
+      - 'tesseract-proxy/internal/profile/**'
       - '.github/workflows/bundle.yml'
 
 permissions:
@@ -33,26 +33,40 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          go-version-file: tesseract-proxy/go.mod
+          cache: true
+          cache-dependency-path: tesseract-proxy/go.sum
 
       - name: install jv (JSON Schema validator)
         run: go install github.com/santhosh-tekuri/jsonschema/cmd/jv@latest
 
       - name: schema-validate each broker YAML
         working-directory: tesseract-proxy-config
-        run: make validate
+        run: |
+          set -e
+          for f in brokers/*.yaml; do
+            echo "==> $f"
+            jv schemas/bundle.schema.json "$f"
+          done
 
-      - name: generate dev signing key
+      - name: generate dev signing key (ECDSA P-256)
         working-directory: tesseract-proxy-config
-        run: make test-keys
+        run: |
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out test.key
+          openssl ec -in test.key -pubout -out test.key.pub
 
       - name: build + sign bundle (dev key)
-        working-directory: tesseract-proxy-config
-        run: make sign SIGNER_KEY=test.key
+        working-directory: tesseract-proxy
+        run: |
+          go run ./cmd/build-bundle \
+            -meta    ../tesseract-proxy-config/meta.yaml \
+            -brokers ../tesseract-proxy-config/brokers \
+            -out     ../tesseract-proxy-config/bundle.yaml \
+            -sig     ../tesseract-proxy-config/bundle.yaml.sig \
+            -signer-key ../tesseract-proxy-config/test.key
 
       # Same-repo round-trip: the bundle just produced must parse against
       # the proxy's strict loader (signature + schema + version gates).
-      # Before consolidation this was a cross-repo TODO; now it's a one-liner.
       - name: round-trip verify against proxy strict loader
         working-directory: tesseract-proxy
         run: |

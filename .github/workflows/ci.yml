@@ -109,25 +109,40 @@ jobs:
           CGO_ENABLED: "0"
         run: go build -ldflags "-s -w" -o /tmp/tesseract-proxy-egress .
 
-  # --- BuildScripts/build-bundle ----------------------------------------------
+  # --- tools/admin-ui (R6 + R7) -----------------------------------------------
 
-  build-bundle:
-    name: BuildScripts/build-bundle (vet + build)
+  admin-ui:
+    name: tools/admin-ui (test + vet + frontend build)
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: BuildScripts/build-bundle
+        working-directory: tools/admin-ui
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: BuildScripts/build-bundle/go.mod
+          go-version-file: tools/admin-ui/go.mod
           cache: true
-          cache-dependency-path: BuildScripts/build-bundle/go.sum
+          cache-dependency-path: tools/admin-ui/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: tools/admin-ui/web/package-lock.json
+
+      - name: frontend (npm ci + build)
+        working-directory: tools/admin-ui/web
+        run: |
+          npm ci
+          npm run build
 
       - name: go vet
         run: go vet ./...
 
-      - name: go build
-        run: go build .
+      - name: go test
+        run: go test ./...
+
+      - name: go build (host)
+        run: go build -v ./...

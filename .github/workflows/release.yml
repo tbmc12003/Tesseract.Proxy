@@ -1,0 +1,150 @@
+name: release
+
+# Triggered by pushing an annotated tag matching v* (e.g. v0.3.0).
+# Cross-compiles the proxy for linux/amd64 + linux/arm64, signs both
+# binaries and the bundle with the ECDSA P-256 key materialised from
+# the SIGNING_KEY_PEM secret, and publishes the tarballs +
+# .sha256 + signing.pub as a GitHub Release.
+#
+# Bootstrap (one-time, per the README at src/release/README.md):
+#   gh secret set SIGNING_KEY_PEM < releases/keys/signing.key
+#
+# CI0.4 decision (2026-05-14): encrypted GitHub secret, not OIDC->KMS.
+#   Rationale: single-developer project, AWS account already in use
+#   for Lightsail but adding a KMS asymmetric key + OIDC role is
+#   non-trivial setup ($1/mo per key + IAM plumbing) relative to the
+#   threat model (no third-party actions, branch protection on main).
+#   Upgrade path: swap the `materialize key` step for `aws kms sign`
+#   and replace the openssl invocations in build-tarball.sh — the
+#   tarball signature format (DER ECDSA over SHA-256) is identical.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write  # required to create the GitHub Release + upload assets
+
+jobs:
+
+  build:
+    name: build linux/${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tesseract-proxy/go.mod
+          cache: true
+          cache-dependency-path: tesseract-proxy/go.sum
+
+      - name: materialise signing key (tmpfs)
+        env:
+          SIGNING_KEY_PEM: ${{ secrets.SIGNING_KEY_PEM }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SIGNING_KEY_PEM:-}" ]; then
+            echo "SIGNING_KEY_PEM secret is empty — refusing to build an unsigned release." >&2
+            exit 1
+          fi
+          mkdir -p /dev/shm/sign
+          chmod 700 /dev/shm/sign
+          printf '%s\n' "$SIGNING_KEY_PEM" > /dev/shm/sign/signing.key
+          chmod 600 /dev/shm/sign/signing.key
+          openssl ec -in /dev/shm/sign/signing.key -pubout -out /dev/shm/sign/signing.pub
+          # Sanity: confirm it's the P-256 curve we expect.
+          openssl ec -in /dev/shm/sign/signing.key -text -noout 2>/dev/null \
+            | grep -q 'prime256v1\|P-256' \
+            || { echo "signing key is not ECDSA P-256" >&2; exit 1; }
+
+      - name: build tarball
+        run: |
+          ./release/scripts/build-tarball.sh \
+            --version "${GITHUB_REF_NAME}" \
+            --signer-key /dev/shm/sign/signing.key \
+            --pubkey     /dev/shm/sign/signing.pub \
+            --arch       "${{ matrix.arch }}" \
+            --out        "$GITHUB_WORKSPACE/dist"
+
+      - name: scrub key material
+        if: always()
+        run: |
+          shred -u /dev/shm/sign/signing.key 2>/dev/null || true
+          rm -rf /dev/shm/sign
+
+      - name: upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tesseract-proxy-${{ matrix.arch }}
+          path: |
+            dist/tesseract-proxy-*-linux-${{ matrix.arch }}.tar.gz
+            dist/tesseract-proxy-*-linux-${{ matrix.arch }}.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: extract signing.pub for the release
+        env:
+          SIGNING_KEY_PEM: ${{ secrets.SIGNING_KEY_PEM }}
+        run: |
+          set -euo pipefail
+          mkdir -p /dev/shm/sign
+          chmod 700 /dev/shm/sign
+          printf '%s\n' "$SIGNING_KEY_PEM" > /dev/shm/sign/signing.key
+          chmod 600 /dev/shm/sign/signing.key
+          openssl ec -in /dev/shm/sign/signing.key -pubout -out dist/equinomics-signing.pub
+          shred -u /dev/shm/sign/signing.key 2>/dev/null || true
+          rm -rf /dev/shm/sign
+
+      - name: list assets
+        run: ls -lh dist/
+
+      - name: create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          cat > /tmp/release-notes.md <<EOF
+          Tesseract proxy release ${TAG}.
+
+          Verify a downloaded tarball before unpacking:
+
+          \`\`\`
+          sha256sum -c tesseract-proxy-${TAG}-linux-amd64.tar.gz.sha256
+          \`\`\`
+
+          The bundle and proxy binary inside the tarball are signed with
+          the public key included at \`etc/pubkey/equinomics-signing.pub\`
+          (also attached to this release as \`equinomics-signing.pub\`).
+          The in-tarball \`install.sh\` verifies both signatures before
+          any filesystem placement happens.
+          EOF
+          # The HEREDOC adds the workflow's leading indent to every line;
+          # strip it so the rendered release-notes markdown isn't wrapped
+          # in a code block on GitHub.
+          sed -i 's/^          //' /tmp/release-notes.md
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file /tmp/release-notes.md \
+            dist/tesseract-proxy-*-linux-amd64.tar.gz \
+            dist/tesseract-proxy-*-linux-amd64.tar.gz.sha256 \
+            dist/tesseract-proxy-*-linux-arm64.tar.gz \
+            dist/tesseract-proxy-*-linux-arm64.tar.gz.sha256 \
+            dist/equinomics-signing.pub

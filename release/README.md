@@ -163,12 +163,91 @@ status, you're live.
 ## Verifying tarball signatures yourself
 
 ```
-sha256sum tesseract-proxy-v0.1.0-linux-amd64.tar.gz
-# compare against the .sha256 file accompanying the release
+sha256sum -c tesseract-proxy-v0.3.0-linux-amd64.tar.gz.sha256
 
 # After untar, before running install.sh:
-openssl pkeyutl -verify \
-    -pubin -inkey etc/pubkey/equinomics-signing.pub \
-    -rawin -in bin/proxy -sigfile bin/proxy.sig
-# should print: Signature Verified Successfully
+openssl dgst -sha256 \
+    -verify etc/pubkey/equinomics-signing.pub \
+    -signature bin/proxy.sig bin/proxy
+# should print: Verified OK
+
+# Same syntax for the bundle:
+openssl dgst -sha256 \
+    -verify etc/pubkey/equinomics-signing.pub \
+    -signature etc/profiles/bundle.yaml.sig etc/profiles/bundle.yaml
 ```
+
+Signing scheme is ECDSA P-256 over SHA-256 (DER signature). The
+in-tarball `install.sh` runs both verifications automatically before
+any filesystem placement.
+
+## CI: tag-triggered releases via GitHub Actions
+
+Pushing an annotated tag matching `v*` to GitHub runs
+`.github/workflows/release.yml`, which:
+
+1. Materialises the ECDSA signing key from the `SIGNING_KEY_PEM`
+   repository secret to `/dev/shm` (tmpfs, runner-local, scrubbed on
+   exit).
+2. Cross-compiles `cmd/proxy` to `linux/amd64` and `linux/arm64`,
+   signs both binaries, builds + signs the bundle, and assembles two
+   tarballs via `release/scripts/build-tarball.sh`.
+3. Publishes the tarballs + `.sha256` files + the matching
+   `equinomics-signing.pub` to a GitHub Release named after the tag.
+
+### One-time secret bootstrap
+
+```
+# From the local desktop where the signing key lives:
+gh secret set SIGNING_KEY_PEM < releases/keys/signing.key
+```
+
+The secret is the entire PKCS#8 PEM body (the `-----BEGIN PRIVATE KEY-----`
+... `-----END PRIVATE KEY-----` block). GitHub encrypts it at rest with
+libsodium sealed boxes; only Actions runners with this repo's `release`
+workflow context can decrypt it.
+
+### CI0.4 decision — encrypted secret, not KMS/OIDC
+
+For a single-developer project we use an encrypted GitHub Secret rather
+than the OIDC → AWS KMS asymmetric key flow.
+
+- **Pro:** zero AWS setup (no KMS key, no OIDC identity provider, no
+  IAM role); the key already exists on the desktop and is the same one
+  used for local `release.sh` builds.
+- **Con:** the unencrypted PEM materialises inside the runner during
+  the build step. If a third-party action with arbitrary-code-execution
+  ever gets added to this workflow, the key leaks. Today the workflow
+  uses only `actions/checkout`, `actions/setup-go`,
+  `actions/upload-artifact`, `actions/download-artifact`, and
+  `gh release create` — all first-party — so the surface is small.
+
+**Upgrade path to KMS** (if a co-maintainer ever joins): replace the
+"materialise signing key" step with an
+`aws-actions/configure-aws-credentials@v4` OIDC role-assume, then
+swap the `openssl dgst -sign` calls in `build-tarball.sh` for
+`aws kms sign --signing-algorithm ECDSA_SHA_256`. The on-wire
+signature format is identical (DER), so verifiers don't change.
+
+### Tagging a release
+
+```
+# Update version references if needed, commit, then:
+git tag -a v0.4.0 -m "v0.4.0 — short release note"
+git push origin v0.4.0
+# Watch the run:
+gh run watch
+```
+
+Force-rebuilding an existing tag is **deliberately not supported** —
+`v*` Releases should be append-only. Cut a new patch tag (`v0.4.1`)
+instead.
+
+## CI: schema + bundle round-trip per PR
+
+`.github/workflows/bundle.yml` runs on PRs that touch broker YAMLs,
+`cmd/build-bundle`, `cmd/verify-bundle`, or `internal/profile/`. It
+schema-validates every broker file with `jv`, builds + signs a fresh
+bundle with a throwaway ECDSA key, and re-parses that bundle through
+the proxy's strict loader. A bundle that won't load in CI won't load
+on the box either.

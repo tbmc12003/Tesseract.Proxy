@@ -73,8 +73,15 @@ esac
 [ -n "$VERSION" ] || { echo "--version is required (e.g. v0.2.0)" >&2; exit 1; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_ROOT="$REPO_ROOT/src"
+# `release/scripts/` and `tesseract-proxy/` are siblings under whatever
+# layout this is invoked from:
+#   local workspace: equinomics/src/release/scripts/  →  SRC_ROOT=equinomics/src
+#   GitHub Actions:  <checkout>/release/scripts/      →  SRC_ROOT=<checkout>
+# Either way, SRC_ROOT is two levels up from the script.
+SRC_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# REPO_ROOT is one above SRC_ROOT and is only used for the local-workspace
+# default of `releases/keys/signing.key`. CI passes --signer-key explicitly.
+REPO_ROOT="$(cd "$SRC_ROOT/.." && pwd)"
 
 # Defaults that point at the keys gen-signing-key.sh wrote.
 [ -n "$SIGNER_KEY" ] || SIGNER_KEY="$REPO_ROOT/releases/keys/signing.key"
