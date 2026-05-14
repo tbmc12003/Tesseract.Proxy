@@ -7,8 +7,10 @@ package main
 // metrics counters reflect the outcome.
 
 import (
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -41,8 +43,9 @@ func newFixture(t *testing.T) *fixture {
 	dir := t.TempDir()
 
 	// Bundle signing key.
-	bundlePub, bundlePriv, err := ed25519.GenerateKey(rand.Reader)
+	bundlePriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	must(t, err)
+	bundlePub := &bundlePriv.PublicKey
 	bundlePubPath := filepath.Join(dir, "bundle.pub")
 	mustWritePEM(t, bundlePubPath, "PUBLIC KEY", mustMarshalPKIX(t, bundlePub))
 
@@ -87,7 +90,10 @@ brokers:
 	bundlePath := filepath.Join(dir, "bundle.yaml")
 	sigPath := filepath.Join(dir, "bundle.yaml.sig")
 	must(t, os.WriteFile(bundlePath, []byte(bundleYAML), 0o600))
-	must(t, os.WriteFile(sigPath, ed25519.Sign(bundlePriv, []byte(bundleYAML)), 0o600))
+	bundleHash := sha256.Sum256([]byte(bundleYAML))
+	bundleSig, err := ecdsa.SignASN1(rand.Reader, bundlePriv, bundleHash[:])
+	must(t, err)
+	must(t, os.WriteFile(sigPath, bundleSig, 0o600))
 
 	// CA file on disk (for the proxy's MTLS.ClientCA + the test client's RootCAs).
 	caPath := filepath.Join(dir, "ca.pem")
@@ -265,7 +271,7 @@ func must(t *testing.T, err error) {
 	}
 }
 
-func mustMarshalPKIX(t *testing.T, pub ed25519.PublicKey) []byte {
+func mustMarshalPKIX(t *testing.T, pub *ecdsa.PublicKey) []byte {
 	t.Helper()
 	der, err := x509.MarshalPKIXPublicKey(pub)
 	must(t, err)
@@ -277,9 +283,9 @@ func mustWritePEM(t *testing.T, path, typ string, der []byte) {
 	must(t, os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der}), 0o600))
 }
 
-func newCA(t *testing.T) (*x509.Certificate, ed25519.PrivateKey, []byte) {
+func newCA(t *testing.T) (*x509.Certificate, *ecdsa.PrivateKey, []byte) {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	must(t, err)
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
@@ -290,7 +296,7 @@ func newCA(t *testing.T) (*x509.Certificate, ed25519.PrivateKey, []byte) {
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
 	must(t, err)
 	cert, err := x509.ParseCertificate(der)
 	must(t, err)
@@ -298,9 +304,9 @@ func newCA(t *testing.T) (*x509.Certificate, ed25519.PrivateKey, []byte) {
 	return cert, priv, caPEM
 }
 
-func issueServerCert(t *testing.T, dir string, ca *x509.Certificate, caKey ed25519.PrivateKey) (certPath, keyPath string) {
+func issueServerCert(t *testing.T, dir string, ca *x509.Certificate, caKey *ecdsa.PrivateKey) (certPath, keyPath string) {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	must(t, err)
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(100),
@@ -312,7 +318,7 @@ func issueServerCert(t *testing.T, dir string, ca *x509.Certificate, caKey ed255
 		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
 		DNSNames:     []string{"localhost"},
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, pub, caKey)
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, &priv.PublicKey, caKey)
 	must(t, err)
 	certPath = filepath.Join(dir, "server.pem")
 	keyPath = filepath.Join(dir, "server.key")
@@ -323,10 +329,11 @@ func issueServerCert(t *testing.T, dir string, ca *x509.Certificate, caKey ed255
 	return certPath, keyPath
 }
 
-func issueClientCert(t *testing.T, ca *x509.Certificate, caKey ed25519.PrivateKey, serial int64) tls.Certificate {
+func issueClientCert(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey, serial int64) tls.Certificate {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	must(t, err)
+	pub := &priv.PublicKey
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(serial),
 		Subject:      pkix.Name{CommonName: "order-client"},

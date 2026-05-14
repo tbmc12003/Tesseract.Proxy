@@ -1,8 +1,10 @@
 package profile_test
 
 import (
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
 	"os"
@@ -92,13 +94,13 @@ type testEnv struct {
 	bundlePath     string
 	sigPath        string
 	pubkeyPath     string
-	privKey        ed25519.PrivateKey
+	privKey        *ecdsa.PrivateKey
 	bundleContents []byte
 }
 
 func newTestEnv(t *testing.T, bundleYAML string) *testEnv {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
@@ -112,9 +114,13 @@ func newTestEnv(t *testing.T, bundleYAML string) *testEnv {
 		bundleContents: []byte(bundleYAML),
 	}
 	mustWrite(t, env.bundlePath, env.bundleContents)
-	sig := ed25519.Sign(priv, env.bundleContents)
+	h := sha256.Sum256(env.bundleContents)
+	sig, err := ecdsa.SignASN1(rand.Reader, priv, h[:])
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
 	mustWrite(t, env.sigPath, sig)
-	mustWrite(t, env.pubkeyPath, encodePubkey(t, pub))
+	mustWrite(t, env.pubkeyPath, encodePubkey(t, &priv.PublicKey))
 	return env
 }
 
@@ -125,7 +131,7 @@ func mustWrite(t *testing.T, path string, data []byte) {
 	}
 }
 
-func encodePubkey(t *testing.T, pub ed25519.PublicKey) []byte {
+func encodePubkey(t *testing.T, pub *ecdsa.PublicKey) []byte {
 	t.Helper()
 	der, err := x509.MarshalPKIXPublicKey(pub)
 	if err != nil {
@@ -178,11 +184,11 @@ func TestLoadAndVerify_WrongPubkey(t *testing.T) {
 	t.Parallel()
 	env := newTestEnv(t, goldenBundle)
 	// Overwrite the pubkey with a freshly-generated unrelated one.
-	otherPub, _, err := ed25519.GenerateKey(rand.Reader)
+	otherPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustWrite(t, env.pubkeyPath, encodePubkey(t, otherPub))
+	mustWrite(t, env.pubkeyPath, encodePubkey(t, &otherPriv.PublicKey))
 
 	_, err = profile.LoadAndVerify(env.opts())
 	if err == nil || !strings.Contains(err.Error(), "verification failed") {

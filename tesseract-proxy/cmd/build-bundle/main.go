@@ -1,15 +1,23 @@
 // Command build-bundle merges meta.yaml + brokers/*.yaml into a single
-// bundle.yaml and (optionally) signs it with an Ed25519 detached
-// signature (arch §13.2 / §13.4).
+// bundle.yaml and (optionally) signs it with an ECDSA P-256 detached
+// signature (ASN.1 DER over SHA-256(bundle)).
 //
-// The proxy's strict YAML loader (internal/profile.LoadAndVerify) is
-// the authority on whether the output parses. A `make validate` step
-// is encouraged in CI before publishing.
+// The proxy's strict YAML loader (internal/profile.LoadAndVerify) is the
+// authority on whether the output parses.
+//
+// Signature scheme:
+//
+//   sig = ecdsa.SignASN1(rand, priv, SHA256(bundle))
+//
+// matches `openssl dgst -sha256 -sign key.pem -out sig.bin bundle.yaml`
+// and is verified by `openssl dgst -sha256 -verify pub.pem -signature sig.bin`.
 package main
 
 import (
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
 	"flag"
@@ -36,8 +44,8 @@ func run() error {
 		metaPath      = flag.String("meta", "meta.yaml", "static bundle header")
 		brokersDir    = flag.String("brokers", "brokers", "directory of broker YAMLs")
 		outPath       = flag.String("out", "bundle.yaml", "output bundle path")
-		sigPath       = flag.String("sig", "", "if set, also emit Ed25519 detached signature here")
-		signerKeyPath = flag.String("signer-key", "", "Ed25519 PRIVATE key (PEM PKCS8). Required if -sig is set. For dev only — production uses AWS KMS sign.")
+		sigPath       = flag.String("sig", "", "if set, also emit ECDSA P-256 detached signature here (ASN.1 DER)")
+		signerKeyPath = flag.String("signer-key", "", "ECDSA P-256 PRIVATE key (PEM PKCS8). Required if -sig is set.")
 		bundleVersion = flag.String("bundle-version", "", "explicit bundle_version (default: date + 'dev')")
 	)
 	flag.Parse()
@@ -73,15 +81,19 @@ func run() error {
 	if *signerKeyPath == "" {
 		return fmt.Errorf("-sig requires -signer-key")
 	}
-	priv, err := readEd25519Priv(*signerKeyPath)
+	priv, err := readECDSAPriv(*signerKeyPath)
 	if err != nil {
 		return fmt.Errorf("signer key: %w", err)
 	}
-	sig := ed25519.Sign(priv, rendered)
+	h := sha256.Sum256(rendered)
+	sig, err := ecdsa.SignASN1(rand.Reader, priv, h[:])
+	if err != nil {
+		return fmt.Errorf("sign: %w", err)
+	}
 	if err := os.WriteFile(*sigPath, sig, 0o640); err != nil {
 		return fmt.Errorf("write sig: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "wrote %s (%d-byte Ed25519 signature)\n", *sigPath, len(sig))
+	fmt.Fprintf(os.Stderr, "wrote %s (%d-byte ECDSA P-256 DER signature)\n", *sigPath, len(sig))
 	return nil
 }
 
@@ -130,7 +142,7 @@ func loadBrokers(dir string) ([]any, error) {
 	return out, nil
 }
 
-func readEd25519Priv(path string) (ed25519.PrivateKey, error) {
+func readECDSAPriv(path string) (*ecdsa.PrivateKey, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -139,44 +151,24 @@ func readEd25519Priv(path string) (ed25519.PrivateKey, error) {
 	if block == nil {
 		return nil, fmt.Errorf("no PEM block in %s", path)
 	}
-	if block.Type != "PRIVATE KEY" {
-		return nil, fmt.Errorf("expected PRIVATE KEY block, got %q", block.Type)
+	var keyAny any
+	switch block.Type {
+	case "PRIVATE KEY":
+		keyAny, err = x509.ParsePKCS8PrivateKey(block.Bytes)
+	case "EC PRIVATE KEY":
+		keyAny, err = x509.ParseECPrivateKey(block.Bytes)
+	default:
+		return nil, fmt.Errorf("expected PRIVATE KEY or EC PRIVATE KEY block, got %q", block.Type)
 	}
-	keyAny, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
 		return nil, err
 	}
-	priv, ok := keyAny.(ed25519.PrivateKey)
+	priv, ok := keyAny.(*ecdsa.PrivateKey)
 	if !ok {
-		return nil, fmt.Errorf("key is not Ed25519 (got %T)", keyAny)
+		return nil, fmt.Errorf("key is not ECDSA (got %T)", keyAny)
+	}
+	if priv.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("key is not P-256 (got %s)", priv.Curve.Params().Name)
 	}
 	return priv, nil
-}
-
-// genTestKey is a debug helper invoked by `go run ./cmd/build-bundle -gen-test-key out.pem`.
-// Not used in production. Production signing is AWS KMS Ed25519 (P0.4).
-func init() {
-	if len(os.Args) >= 3 && os.Args[1] == "-gen-test-key" {
-		_, priv, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		der, err := x509.MarshalPKCS8PrivateKey(priv)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-		if err := os.WriteFile(os.Args[2], pemBytes, 0o600); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		// Also emit matching pubkey alongside, with .pub suffix.
-		pubDER, _ := x509.MarshalPKIXPublicKey(priv.Public())
-		pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
-		_ = os.WriteFile(os.Args[2]+".pub", pubPEM, 0o644)
-		fmt.Fprintf(os.Stderr, "wrote %s + %s.pub\n", os.Args[2], os.Args[2])
-		os.Exit(0)
-	}
 }

@@ -2,8 +2,10 @@ package admin_test
 
 import (
 	"bytes"
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -52,7 +54,7 @@ brokers:
 
 func buildRouter(t *testing.T) *profile.Router {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,8 +63,13 @@ func buildRouter(t *testing.T) *profile.Router {
 	sigPath := filepath.Join(dir, "bundle.yaml.sig")
 	pubkeyPath := filepath.Join(dir, "pubkey.pem")
 	must(t, os.WriteFile(bundlePath, []byte(bundleYAML), 0o600))
-	must(t, os.WriteFile(sigPath, ed25519.Sign(priv, []byte(bundleYAML)), 0o600))
-	der, err := x509.MarshalPKIXPublicKey(pub)
+	bundleHash := sha256.Sum256([]byte(bundleYAML))
+	bundleSig, err := ecdsa.SignASN1(rand.Reader, priv, bundleHash[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	must(t, os.WriteFile(sigPath, bundleSig, 0o600))
+	der, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}

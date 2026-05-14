@@ -2,7 +2,9 @@ package profile
 
 import (
 	"bytes"
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -19,9 +21,10 @@ import (
 type LoadOptions struct {
 	// BundlePath is the path to the bundle YAML file.
 	BundlePath string
-	// SigPath is the path to the detached Ed25519 signature (raw 64 bytes).
+	// SigPath is the path to the detached ECDSA P-256 signature (ASN.1 DER,
+	// as produced by `openssl dgst -sha256 -sign` or Go's ecdsa.SignASN1).
 	SigPath string
-	// PubkeyPath is the path to a PEM-encoded PKIX Ed25519 public key.
+	// PubkeyPath is the path to a PEM-encoded PKIX ECDSA P-256 public key.
 	PubkeyPath string
 	// BinaryVersion is the running proxy version; if non-empty and
 	// non-"dev", the bundle's min_proxy_version is enforced against it.
@@ -100,7 +103,7 @@ func decodeBundle(data []byte) (*Bundle, error) {
 	return &b, nil
 }
 
-func readPubkey(path string) (ed25519.PublicKey, error) {
+func readPubkey(path string) (*ecdsa.PublicKey, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("profile: read pubkey: %w", err)
@@ -116,19 +119,23 @@ func readPubkey(path string) (ed25519.PublicKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("profile: pubkey: parse PKIX: %w", err)
 	}
-	pub, ok := pubAny.(ed25519.PublicKey)
+	pub, ok := pubAny.(*ecdsa.PublicKey)
 	if !ok {
-		return nil, fmt.Errorf("profile: pubkey: not an Ed25519 key (got %T)", pubAny)
+		return nil, fmt.Errorf("profile: pubkey: not an ECDSA key (got %T)", pubAny)
+	}
+	if pub.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("profile: pubkey: expected P-256, got %s", pub.Curve.Params().Name)
 	}
 	return pub, nil
 }
 
-func verifySignature(pub ed25519.PublicKey, msg, sig []byte) error {
-	if len(sig) != ed25519.SignatureSize {
-		return fmt.Errorf("profile: signature: expected %d bytes, got %d", ed25519.SignatureSize, len(sig))
+func verifySignature(pub *ecdsa.PublicKey, msg, sig []byte) error {
+	if len(sig) == 0 {
+		return errors.New("profile: signature: empty")
 	}
-	if !ed25519.Verify(pub, msg, sig) {
-		return fmt.Errorf("profile: signature: verification failed")
+	h := sha256.Sum256(msg)
+	if !ecdsa.VerifyASN1(pub, h[:], sig) {
+		return errors.New("profile: signature: verification failed")
 	}
 	return nil
 }

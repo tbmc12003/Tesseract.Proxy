@@ -1,7 +1,8 @@
 package mtls_test
 
 import (
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -24,9 +25,9 @@ import (
 // certKit owns a CA and produces server / client certs signed by it.
 type certKit struct {
 	caCert     *x509.Certificate
-	caKey      ed25519.PrivateKey
+	caKey      *ecdsa.PrivateKey
 	caCertPEM  []byte
-	otherCAKey ed25519.PrivateKey  // a second, unrelated CA — for "valid cert from wrong CA" tests
+	otherCAKey *ecdsa.PrivateKey  // a second, unrelated CA — for "valid cert from wrong CA" tests
 	otherCA    *x509.Certificate
 }
 
@@ -40,9 +41,9 @@ func newCertKit(t *testing.T) *certKit {
 	}
 }
 
-func newCA(t *testing.T, cn string) (*x509.Certificate, ed25519.PrivateKey, []byte) {
+func newCA(t *testing.T, cn string) (*x509.Certificate, *ecdsa.PrivateKey, []byte) {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +56,7 @@ func newCA(t *testing.T, cn string) (*x509.Certificate, ed25519.PrivateKey, []by
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +71,7 @@ func newCA(t *testing.T, cn string) (*x509.Certificate, ed25519.PrivateKey, []by
 // issueServerCert produces a server cert valid for 127.0.0.1.
 func (k *certKit) issueServerCert(t *testing.T, serial int64) (certPEMPath, keyPEMPath string) {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +85,7 @@ func (k *certKit) issueServerCert(t *testing.T, serial int64) (certPEMPath, keyP
 		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
 		DNSNames:     []string{"localhost"},
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, k.caCert, pub, k.caKey)
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, k.caCert, &priv.PublicKey, k.caKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,9 +119,9 @@ func (k *certKit) writeCAFile(t *testing.T) string {
 
 // issueClientCert mints a client cert with the given serial, signed by
 // `signer` (one of caKey or otherCAKey).
-func (k *certKit) issueClientCert(t *testing.T, serial int64, cn string, signWith ed25519.PrivateKey, parent *x509.Certificate, notBefore, notAfter time.Time) tls.Certificate {
+func (k *certKit) issueClientCert(t *testing.T, serial int64, cn string, signWith *ecdsa.PrivateKey, parent *x509.Certificate, notBefore, notAfter time.Time) tls.Certificate {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +133,7 @@ func (k *certKit) issueClientCert(t *testing.T, serial int64, cn string, signWit
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, pub, signWith)
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, &priv.PublicKey, signWith)
 	if err != nil {
 		t.Fatal(err)
 	}

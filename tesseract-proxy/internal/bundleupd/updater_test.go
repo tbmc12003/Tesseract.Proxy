@@ -2,8 +2,10 @@ package bundleupd_test
 
 import (
 	"context"
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -46,20 +48,20 @@ brokers:
 `, version, rps)
 }
 
-// signingKit holds an ed25519 keypair and writes the matching pubkey to a
+// signingKit holds an ECDSA P-256 keypair and writes the matching pubkey to a
 // temp file for the Updater's PubkeyPath. Bundles are signed inline.
 type signingKit struct {
-	priv       ed25519.PrivateKey
+	priv       *ecdsa.PrivateKey
 	pubkeyPath string
 }
 
 func newSigningKit(t *testing.T) *signingKit {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	der, err := x509.MarshalPKIXPublicKey(pub)
+	der, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +73,23 @@ func newSigningKit(t *testing.T) *signingKit {
 	return &signingKit{priv: priv, pubkeyPath: path}
 }
 
-func (k *signingKit) sign(b []byte) []byte { return ed25519.Sign(k.priv, b) }
+func (k *signingKit) sign(b []byte) []byte {
+	h := sha256.Sum256(b)
+	sig, err := ecdsa.SignASN1(rand.Reader, k.priv, h[:])
+	if err != nil {
+		panic(err)
+	}
+	return sig
+}
+
+func signWith(priv *ecdsa.PrivateKey, b []byte) []byte {
+	h := sha256.Sum256(b)
+	sig, err := ecdsa.SignASN1(rand.Reader, priv, h[:])
+	if err != nil {
+		panic(err)
+	}
+	return sig
+}
 
 // stubFetcher returns canned responses in order. After exhaustion it
 // returns an error so a misconfigured test surfaces.
@@ -217,8 +235,8 @@ func TestTick_BadSignatureKeepsCurrent(t *testing.T) {
 		},
 		func() (*bundleupd.FetchResult, error) {
 			// Sign with the wrong key.
-			_, otherPriv, _ := ed25519.GenerateKey(rand.Reader)
-			return &bundleupd.FetchResult{Bundle: []byte(bad), Signature: ed25519.Sign(otherPriv, []byte(bad))}, nil
+			otherPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			return &bundleupd.FetchResult{Bundle: []byte(bad), Signature: signWith(otherPriv, []byte(bad))}, nil
 		},
 	}}
 	u := newUpdater(t, e, f)

@@ -13,28 +13,30 @@ trap 'rm -rf "$SCRATCH"' EXIT
 cd "$SCRATCH"
 echo "smoketest scratch: $SCRATCH"
 
-# ---- Ed25519 bundle signing key ----
-openssl genpkey -algorithm Ed25519 -out bundle.key
+EC="-algorithm EC -pkeyopt ec_paramgen_curve:P-256 -pkeyopt ec_param_enc:named_curve"
+
+# ---- ECDSA P-256 bundle signing key ----
+openssl genpkey $EC -out bundle.key
 openssl pkey -in bundle.key -pubout -out bundle.pub
 
-# ---- CA + server cert + client cert ----
-openssl genpkey -algorithm Ed25519 -out ca.key
-openssl req -new -x509 -key ca.key -days 1 -out ca.pem -subj "/CN=smoke-ca"
+# ---- CA + server cert + client cert (all ECDSA P-256) ----
+openssl genpkey $EC -out ca.key
+openssl req -new -x509 -key ca.key -days 1 -sha256 -out ca.pem -subj "/CN=smoke-ca"
 
-openssl genpkey -algorithm Ed25519 -out server.key
+openssl genpkey $EC -out server.key
 openssl req -new -key server.key -out server.csr -subj "/CN=localhost"
 cat >server.ext <<EOF
 subjectAltName = DNS:localhost,IP:127.0.0.1
 extendedKeyUsage = serverAuth
 EOF
 openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
-  -out server.pem -days 1 -extfile server.ext
+  -out server.pem -days 1 -sha256 -extfile server.ext
 
-openssl genpkey -algorithm Ed25519 -out client.key
+openssl genpkey $EC -out client.key
 openssl req -new -key client.key -out client.csr -subj "/CN=order"
 echo "extendedKeyUsage = clientAuth" >client.ext
 openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
-  -set_serial 1001 -out client.pem -days 1 -extfile client.ext
+  -set_serial 1001 -out client.pem -days 1 -sha256 -extfile client.ext
 
 # ---- Signed bundle ----
 mkdir -p profiles
@@ -61,7 +63,7 @@ brokers:
       per_user_rps: 100
       per_user_burst: 200
 EOF
-openssl pkeyutl -sign -inkey bundle.key -rawin -in bundle.yaml -out bundle.yaml.sig
+openssl dgst -sha256 -sign bundle.key -out bundle.yaml.sig bundle.yaml
 cp bundle.yaml profiles/bundle.yaml
 cp bundle.yaml.sig profiles/bundle.yaml.sig
 

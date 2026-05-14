@@ -1,7 +1,7 @@
 // Package profile loads, verifies, and validates the signed broker bundle
 // (arch §13.2 / §13.4 / §13.5) and builds an immutable Router from it.
 //
-// Trust anchor: the Ed25519 signing pubkey is pinned at install time. The
+// Trust anchor: the ECDSA P-256 signing pubkey is pinned at install time. The
 // bundle YAML carries no trust signal by itself — every load path goes
 // through detached-signature verification against the pinned pubkey before
 // any field is acted upon.

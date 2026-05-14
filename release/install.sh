@@ -7,8 +7,8 @@
 # and certs in place.
 #
 # What this does:
-#   1. Verifies the bundled Ed25519 signatures on `proxy` and `bundle.yaml`
-#      against the included pubkey (`equinomics-signing.pub`).
+#   1. Verifies the bundled ECDSA P-256 / SHA-256 signatures on `proxy` and
+#      `bundle.yaml` against the included pubkey (`equinomics-signing.pub`).
 #   2. Creates the `tesseract-proxy` system user / group (no shell).
 #   3. Lays out directories with correct ownership + modes.
 #   4. Copies binaries to /opt/tesseract-proxy/.
@@ -35,10 +35,9 @@ verify_sig() {
     if ! command -v openssl >/dev/null 2>&1; then
         echo "openssl required for signature verification" >&2; exit 1
     fi
-    if ! openssl pkeyutl -verify \
-        -pubin -inkey "$SRC_DIR/etc/pubkey/equinomics-signing.pub" \
-        -rawin -in "$file" \
-        -sigfile "$sig" >/dev/null; then
+    if ! openssl dgst -sha256 \
+        -verify "$SRC_DIR/etc/pubkey/equinomics-signing.pub" \
+        -signature "$sig" "$file" >/dev/null; then
         echo "FATAL: signature verification failed for $file" >&2
         exit 1
     fi

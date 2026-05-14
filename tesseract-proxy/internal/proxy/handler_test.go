@@ -1,8 +1,10 @@
 package proxy_test
 
 import (
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
 	"io"
@@ -68,7 +70,7 @@ brokers:
 
 func buildRouter(t *testing.T) *profile.Router {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,10 +81,15 @@ func buildRouter(t *testing.T) *profile.Router {
 	if err := os.WriteFile(bundlePath, []byte(testBundle), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(sigPath, ed25519.Sign(priv, []byte(testBundle)), 0o600); err != nil {
+	bundleHash := sha256.Sum256([]byte(testBundle))
+	bundleSig, err := ecdsa.SignASN1(rand.Reader, priv, bundleHash[:])
+	if err != nil {
 		t.Fatal(err)
 	}
-	der, err := x509.MarshalPKIXPublicKey(pub)
+	if err := os.WriteFile(sigPath, bundleSig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}

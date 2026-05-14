@@ -12,7 +12,9 @@
 package binupd
 
 import (
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -23,8 +25,8 @@ import (
 
 // Options configures a Receiver. All paths are required.
 type Options struct {
-	// PubkeyPath points at a PEM-encoded PKIX Ed25519 public key. This
-	// is the *binary* signing pubkey — independent from the bundle
+	// PubkeyPath points at a PEM-encoded PKIX ECDSA P-256 public key.
+	// This is the *binary* signing pubkey — independent from the bundle
 	// signing pubkey, though both may live behind the same KMS in
 	// production.
 	PubkeyPath string
@@ -39,7 +41,7 @@ type Options struct {
 // Receiver applies signed binary uploads.
 type Receiver struct {
 	opts Options
-	pub  ed25519.PublicKey
+	pub  *ecdsa.PublicKey
 }
 
 // New constructs a Receiver, loading and validating the pubkey.
@@ -59,7 +61,7 @@ func New(opts Options) (*Receiver, error) {
 	return &Receiver{opts: opts, pub: pub}, nil
 }
 
-func readPubkey(path string) (ed25519.PublicKey, error) {
+func readPubkey(path string) (*ecdsa.PublicKey, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("binupd: read pubkey: %w", err)
@@ -72,9 +74,12 @@ func readPubkey(path string) (ed25519.PublicKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("binupd: pubkey parse: %w", err)
 	}
-	pub, ok := anyKey.(ed25519.PublicKey)
+	pub, ok := anyKey.(*ecdsa.PublicKey)
 	if !ok {
-		return nil, fmt.Errorf("binupd: pubkey is not Ed25519 (got %T)", anyKey)
+		return nil, fmt.Errorf("binupd: pubkey is not ECDSA (got %T)", anyKey)
+	}
+	if pub.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("binupd: pubkey: expected P-256, got %s", pub.Curve.Params().Name)
 	}
 	return pub, nil
 }
@@ -84,11 +89,11 @@ func readPubkey(path string) (ed25519.PublicKey, error) {
 // On verification or write failure the staged path is cleaned up and the
 // current binary is left in place (fail closed).
 func (r *Receiver) Apply(binary, signature []byte) error {
-	if len(signature) != ed25519.SignatureSize {
-		return fmt.Errorf("binupd: signature: expected %d bytes, got %d",
-			ed25519.SignatureSize, len(signature))
+	if len(signature) == 0 {
+		return errors.New("binupd: signature: empty")
 	}
-	if !ed25519.Verify(r.pub, binary, signature) {
+	h := sha256.Sum256(binary)
+	if !ecdsa.VerifyASN1(r.pub, h[:], signature) {
 		return errors.New("binupd: signature verification failed")
 	}
 	if err := writeExecutable(r.opts.StagedPath, binary); err != nil {

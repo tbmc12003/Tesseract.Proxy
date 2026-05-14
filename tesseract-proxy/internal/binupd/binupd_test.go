@@ -2,8 +2,10 @@ package binupd_test
 
 import (
 	"bytes"
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
 	"os"
@@ -21,23 +23,23 @@ type kit struct {
 	current   string
 	previous  string
 	staged    string
-	priv      ed25519.PrivateKey
-	otherPriv ed25519.PrivateKey
+	priv      *ecdsa.PrivateKey
+	otherPriv *ecdsa.PrivateKey
 }
 
 func newKit(t *testing.T) *kit {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, otherPriv, err := ed25519.GenerateKey(rand.Reader)
+	otherPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
 	pubkeyPath := filepath.Join(dir, "pubkey.pem")
-	der, err := x509.MarshalPKIXPublicKey(pub)
+	der, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,6 +56,16 @@ func newKit(t *testing.T) *kit {
 		priv:      priv,
 		otherPriv: otherPriv,
 	}
+}
+
+func sign(t *testing.T, priv *ecdsa.PrivateKey, msg []byte) []byte {
+	t.Helper()
+	h := sha256.Sum256(msg)
+	sig, err := ecdsa.SignASN1(rand.Reader, priv, h[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sig
 }
 
 func (k *kit) receiver(t *testing.T) *binupd.Receiver {
@@ -81,8 +93,7 @@ func TestApply_HappyPath(t *testing.T) {
 	writeFile(t, k.current, []byte("v1"))
 
 	newBin := []byte("v2-binary-bytes")
-	sig := ed25519.Sign(k.priv, newBin)
-	if err := k.receiver(t).Apply(newBin, sig); err != nil {
+	if err := k.receiver(t).Apply(newBin, sign(t, k.priv, newBin)); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	gotCurrent, _ := os.ReadFile(k.current)
@@ -104,8 +115,7 @@ func TestApply_BadSignatureLeavesCurrent(t *testing.T) {
 	writeFile(t, k.current, []byte("v1"))
 
 	bin := []byte("malicious")
-	sig := ed25519.Sign(k.otherPriv, bin) // wrong key
-	err := k.receiver(t).Apply(bin, sig)
+	err := k.receiver(t).Apply(bin, sign(t, k.otherPriv, bin)) // wrong key
 	if err == nil || !strings.Contains(err.Error(), "verification failed") {
 		t.Fatalf("expected verification failure, got %v", err)
 	}
@@ -124,18 +134,21 @@ func TestApply_TamperedBinaryFailsVerify(t *testing.T) {
 	writeFile(t, k.current, []byte("v1"))
 
 	bin := []byte("legit-binary")
-	sig := ed25519.Sign(k.priv, bin)
+	sig := sign(t, k.priv, bin)
 	bin[0] = 'X' // tamper after signing
 	if err := k.receiver(t).Apply(bin, sig); err == nil {
 		t.Error("expected verification failure on tampered binary")
 	}
 }
 
-func TestApply_WrongLengthSignature(t *testing.T) {
+func TestApply_MalformedSignature(t *testing.T) {
 	t.Parallel()
 	k := newKit(t)
 	if err := k.receiver(t).Apply([]byte("anything"), []byte("short")); err == nil {
-		t.Error("expected wrong-length signature error")
+		t.Error("expected malformed-signature error")
+	}
+	if err := k.receiver(t).Apply([]byte("anything"), nil); err == nil {
+		t.Error("expected empty-signature error")
 	}
 }
 
@@ -143,8 +156,7 @@ func TestApply_FirstInstallNoPrevious(t *testing.T) {
 	t.Parallel()
 	k := newKit(t)
 	bin := []byte("v1")
-	sig := ed25519.Sign(k.priv, bin)
-	if err := k.receiver(t).Apply(bin, sig); err != nil {
+	if err := k.receiver(t).Apply(bin, sign(t, k.priv, bin)); err != nil {
 		t.Fatalf("Apply (no prior current): %v", err)
 	}
 	if _, err := os.Stat(k.previous); !os.IsNotExist(err) {
@@ -163,8 +175,7 @@ func TestApply_StagedFileIsExecutable(t *testing.T) {
 	}
 	k := newKit(t)
 	bin := []byte("v1")
-	sig := ed25519.Sign(k.priv, bin)
-	if err := k.receiver(t).Apply(bin, sig); err != nil {
+	if err := k.receiver(t).Apply(bin, sign(t, k.priv, bin)); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(k.current)
@@ -206,7 +217,7 @@ func TestApply_ThenRollback_RoundTrip(t *testing.T) {
 	writeFile(t, k.current, []byte("v1"))
 
 	v2 := []byte("v2-content")
-	if err := k.receiver(t).Apply(v2, ed25519.Sign(k.priv, v2)); err != nil {
+	if err := k.receiver(t).Apply(v2, sign(t, k.priv, v2)); err != nil {
 		t.Fatal(err)
 	}
 	if err := k.receiver(t).Rollback(); err != nil {
@@ -246,4 +257,3 @@ func TestNew_BadPubkey(t *testing.T) {
 		t.Error("expected error on non-PEM pubkey")
 	}
 }
-
