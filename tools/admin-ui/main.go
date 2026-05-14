@@ -40,7 +40,15 @@ func main() {
 		log.Fatalf("listener resolved to non-loopback address %s — refusing to start", ln.Addr())
 	}
 
-	srv := newServer(resolvedCfg)
+	dep, err := loadDeployConfig(resolvedCfg)
+	if err != nil {
+		log.Fatalf("deploy config: %v", err)
+	}
+	if missing := dep.missing(); len(missing) > 0 {
+		log.Printf("deploy.local.yaml missing %v — Publish will return 424 until set", missing)
+	}
+
+	srv := newServer(resolvedCfg, dep)
 	url := fmt.Sprintf("http://%s/", addr)
 	log.Printf("admin-ui listening on %s", url)
 

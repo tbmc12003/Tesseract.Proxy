@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
+import { PublishPanel } from './publish.jsx';
 
 export function App() {
   const [brokers, setBrokers] = useState(null);
@@ -17,6 +18,7 @@ export function App() {
   return (
     <div>
       <h1>Tesseract — Brokers <span class="muted">(loopback admin)</span></h1>
+      <PublishPanel />
       <table>
         <thead>
           <tr>

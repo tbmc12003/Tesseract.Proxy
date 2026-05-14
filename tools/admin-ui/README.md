@@ -44,15 +44,41 @@ Default port: `47821`. Browser opens automatically unless `--no-browser`.
 | POST   | `/api/brokers`        | broker JSON       | id taken from body; 409 if exists |
 | PUT    | `/api/brokers/{name}` | broker JSON       | body.id must equal `{name}` |
 | DELETE | `/api/brokers/{name}` | —                 | 204 on success |
+| POST   | `/api/publish`        | `{"confirm":"DEPLOY"}` | Streams build+deploy log (chunked text). 412 on wrong phrase, 424 if deploy config missing, 409 if another publish is in flight. |
 
 Every write validates against `schemas/bundle.schema.json`. Bad input
 returns `400` with the validator error in `{"error": "..."}`.
+
+## Publish (R6.3)
+
+Publish runs `build-bundle` (Go cmd in `tesseract-proxy/cmd/build-bundle`)
+then `release/scripts/reload-bundle.sh`. The `confirm` body field must be
+the literal string `DEPLOY` — server-side gate so a bookmark or curl
+typo can't push to production.
+
+Deploy parameters live in `tesseract-proxy-config/deploy.local.yaml`
+(gitignored via `*.local.yaml`):
+
+```yaml
+lightsail_ip: 1.2.3.4
+ssh_key:    C:/Users/Sujoy/.ssh/lightsail.pem
+signer_key: C:/Dev-wksp/sources/vs2022/equinomics/releases/keys/signing.key
+# optional — sensible defaults derived from the workspace layout:
+# pubkey:        .../releases/keys/signing.pub
+# bundle_out:    .../releases/staging/bundle.yaml
+# sig_out:       .../releases/staging/bundle.yaml.sig
+# proxy_repo:    .../src/tesseract-proxy
+# reload_script: .../src/release/scripts/reload-bundle.sh
+```
+
+Without that file, `Publish` returns `424 Failed Dependency` with the
+list of missing fields. The binary still starts.
 
 ## Phase status
 
 - R6.1 ✅ Go cmd skeleton + embed.FS + browser launch
 - R6.2 ✅ Broker CRUD endpoints with schema validation
+- R6.3 ✅ Publish flow (build + deploy with `DEPLOY` confirmation gate)
 - R6.6 ✅ Loopback-only enforcement (hard-fail)
-- R6.3 ⏳ Save-and-deploy ("Publish") flow
 - R6.4 ⏳ URL editor table UX
 - R6.5 ⏳ Diff preview before publish
