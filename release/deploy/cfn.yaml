@@ -33,9 +33,14 @@ Parameters:
 
   InstanceBundle:
     Type: String
-    Default: nano_3_0
-    AllowedValues: [nano_3_0, micro_3_0, small_3_0]
-    Description: Lightsail bundle. nano_3_0 (₹290/mo) is sized per arch §3.
+    Default: nano_3_1
+    AllowedValues: [nano_3_1, micro_3_1]
+    Description: >
+      Lightsail bundle (region-specific; these are ap-south-1 IDs as of
+      2026-05). nano_3_1 ($5/mo, 0.5 GB RAM, 2 vCPU, 20 GB disk, 512 GB
+      transfer) is sized per arch §3 — proxy workload is ~10 req/s peak
+      and ~50 MB/day outbound. micro_3_1 ($7/mo, 1 GB RAM, 40 GB disk,
+      1 TB transfer) only if you want headroom.
 
   KeyPairName:
     Type: String
@@ -64,7 +69,20 @@ Resources:
       BundleId: !Ref InstanceBundle
       KeyPairName: !If [HasKeyPair, !Ref KeyPairName, !Ref AWS::NoValue]
       Networking:
+        # NOTE: this Ports list REPLACES Lightsail's default firewall
+        # rules — anything not listed here is closed. SSH is included so
+        # the operator can drop mTLS material on first run; close it
+        # after install with `aws lightsail close-instance-public-ports`
+        # (see "Optional — Disable SSH after install" in
+        # AWS-LIGHTSAIL-SETUP.md).
         Ports:
+          - FromPort: 22
+            ToPort: 22
+            Protocol: tcp
+            AccessDirection: inbound
+            CommonName: tesseract-proxy-ssh
+            Cidrs:
+              - !Ref AllowedSourceCIDR
           - FromPort: 443
             ToPort: 443
             Protocol: tcp
@@ -91,7 +109,7 @@ Resources:
 
         echo "==> extracting + installing"
         tar xzf proxy.tar.gz
-        cd tesseract-proxy-*-linux-arm64
+        cd tesseract-proxy-*-linux-*
         ./install.sh
 
         echo "==> bootstrap complete. operator must now drop certs +"

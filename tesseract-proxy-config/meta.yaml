@@ -2,4 +2,4 @@
 # build time by cmd/build-bundle.
 schema_version: 1
 issuer: equinomics
-min_proxy_version: 0.4.0
+min_proxy_version: 0.1.0

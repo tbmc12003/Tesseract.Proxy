@@ -61,9 +61,10 @@ NoNewPrivileges=true
 
 # We don't need CAP_NET_ADMIN: the nftables ruleset is applied by the
 # tesseract-proxy-egress companion (separate unit) which has elevated
-# privileges. The proxy itself drops everything.
-CapabilityBoundingSet=
-AmbientCapabilities=
+# privileges. The proxy itself needs only CAP_NET_BIND_SERVICE to bind
+# 0.0.0.0:443 as a non-root user — every other capability stays dropped.
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @mount @cpu-emulation @obsolete @debug

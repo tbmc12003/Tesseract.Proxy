@@ -10,7 +10,7 @@ forwarded order, assuming you already have an AWS account.
   static IP — you'll get it after step 2).
 - Tesseract desktop installed locally, holding the CA private key it'll
   use to mint client certs.
-- This tarball: `tesseract-proxy-<version>-linux-arm64.tar.gz`.
+- This tarball: `tesseract-proxy-<version>-linux-amd64.tar.gz`.
 
 ## What the proxy does
 
@@ -21,15 +21,16 @@ exists is to give SEBI's static-IP rule a whitelist target.
 
 ## 1. Provision Lightsail
 
-Either run the bundled CloudFormation template (`deploy/cfn.yaml`) or
-do it by hand:
+**Full walkthrough:** `AWS-LIGHTSAIL-SETUP.md` in this directory. It covers prerequisites, region/AZ/instance-bundle decisions, the CFN deploy command, mTLS material generation with `bootstrap-mtls.sh`, smoke tests, broker whitelisting, snapshots, teardown, and common failure modes.
+
+Quick version:
 
 ```
 aws lightsail create-instances \
     --instance-names tesseract-proxy \
     --availability-zone ap-south-1a \
     --blueprint-id amazon_linux_2023 \
-    --bundle-id nano_3_0 \
+    --bundle-id nano_3_1 \
     --user-data file://user-data.sh
 
 aws lightsail allocate-static-ip --static-ip-name tesseract-proxy-ip
@@ -44,10 +45,10 @@ Note the static IP — this is what you whitelist with brokers.
 `scp` the tarball to the instance, untar, run install.sh as root:
 
 ```
-scp tesseract-proxy-v0.1.0-linux-arm64.tar.gz ec2-user@<ip>:~/
+scp tesseract-proxy-v0.1.0-linux-amd64.tar.gz ec2-user@<ip>:~/
 ssh ec2-user@<ip>
-tar xzf tesseract-proxy-v0.1.0-linux-arm64.tar.gz
-cd tesseract-proxy-v0.1.0-linux-arm64
+tar xzf tesseract-proxy-v0.1.0-linux-amd64.tar.gz
+cd tesseract-proxy-v0.1.0-linux-amd64
 sudo ./install.sh
 ```
 
@@ -162,7 +163,7 @@ status, you're live.
 ## Verifying tarball signatures yourself
 
 ```
-sha256sum tesseract-proxy-v0.1.0-linux-arm64.tar.gz
+sha256sum tesseract-proxy-v0.1.0-linux-amd64.tar.gz
 # compare against the .sha256 file accompanying the release
 
 # After untar, before running install.sh:
