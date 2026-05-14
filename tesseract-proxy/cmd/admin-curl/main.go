@@ -12,9 +12,9 @@
 //
 //	go run ./cmd/admin-curl \
 //	    -ip 13.207.35.97 \
-//	    -ca   ../../../releases/mtls/ca.pem \
-//	    -cert ../../../releases/mtls/client.pem \
-//	    -key  ../../../releases/mtls/client.key \
+//	    -ca   ../../../releases/mtls/root-ca/ca.pem \
+//	    -cert ../../../releases/mtls/tesseract/client.pem \
+//	    -key  ../../../releases/mtls/tesseract/client.key \
 //	    -path /admin/healthz
 //
 // With a host alias (using the cert's SAN matching the IP via TLS

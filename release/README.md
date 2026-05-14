@@ -74,11 +74,14 @@ On the desktop, in Tesseract:
 Upload the server material:
 
 ```
-scp server.pem server.key client-ca.pem ec2-user@<ip>:~/
+scp releases/mtls/proxy/server.pem \
+    releases/mtls/proxy/server.key \
+    releases/mtls/proxy/trust-bundle.pem \
+    ec2-user@<ip>:~/
 ssh ec2-user@<ip>
-sudo install -o root -g tesseract-proxy -m 0640 server.pem /etc/tesseract-proxy/certs/
-sudo install -o root -g tesseract-proxy -m 0640 server.key /etc/tesseract-proxy/certs/
-sudo install -o root -g tesseract-proxy -m 0640 client-ca.pem /etc/tesseract-proxy/certs/
+sudo install -o root -g tesseract-proxy -m 0640 server.pem       /etc/tesseract-proxy/certs/
+sudo install -o root -g tesseract-proxy -m 0640 server.key       /etc/tesseract-proxy/certs/
+sudo install -o root -g tesseract-proxy -m 0640 trust-bundle.pem /etc/tesseract-proxy/certs/
 ```
 
 ## 4. Edit `/etc/tesseract-proxy/proxy.conf.yaml`

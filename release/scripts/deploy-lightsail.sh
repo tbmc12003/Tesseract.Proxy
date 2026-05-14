@@ -94,7 +94,7 @@ fi
 [ -d "$MTLS_DIR" ]      || { echo "mtls dir not found: $MTLS_DIR (run gen-mtls.sh)" >&2; exit 1; }
 [ -n "$CLIENT_SERIAL" ] || { echo "--client-serial is required (the integer gen-mtls.sh printed)" >&2; exit 1; }
 
-for f in server.pem server.key ca.pem; do
+for f in proxy/server.pem proxy/server.key proxy/trust-bundle.pem; do
     [ -f "$MTLS_DIR/$f" ] || { echo "missing $MTLS_DIR/$f" >&2; exit 1; }
 done
 
@@ -171,7 +171,7 @@ ssh "${SSH_OPTS[@]}" -o BatchMode=yes ec2-user@"$IP" true \
 # --- 5. SCP the tarball + mTLS server material -----------------------------
 echo "==> uploading tarball + mTLS material"
 scp "${SSH_OPTS[@]}" "$TARBALL" \
-    "$MTLS_DIR/server.pem" "$MTLS_DIR/server.key" "$MTLS_DIR/ca.pem" \
+    "$MTLS_DIR/proxy/server.pem" "$MTLS_DIR/proxy/server.key" "$MTLS_DIR/proxy/trust-bundle.pem" \
     ec2-user@"$IP":~/
 
 TARBALL_BASENAME=$(basename "$TARBALL")
@@ -185,10 +185,10 @@ tar xzf "$TARBALL_BASENAME"
 sudo "./$TARBALL_STEM/install.sh"
 
 sudo install -d -o root -g tesseract-proxy -m 0750 /etc/tesseract-proxy/certs
-sudo install -o root -g tesseract-proxy -m 0640 server.pem    /etc/tesseract-proxy/certs/
-sudo install -o root -g tesseract-proxy -m 0640 server.key    /etc/tesseract-proxy/certs/
-sudo install -o root -g tesseract-proxy -m 0640 ca.pem        /etc/tesseract-proxy/certs/client-ca.pem
-rm -f server.pem server.key ca.pem "$TARBALL_BASENAME"
+sudo install -o root -g tesseract-proxy -m 0640 server.pem        /etc/tesseract-proxy/certs/
+sudo install -o root -g tesseract-proxy -m 0640 server.key        /etc/tesseract-proxy/certs/
+sudo install -o root -g tesseract-proxy -m 0640 trust-bundle.pem  /etc/tesseract-proxy/certs/
+rm -f server.pem server.key trust-bundle.pem "$TARBALL_BASENAME"
 REMOTE
 
 # --- 7. Render proxy.conf.yaml with the client serial ----------------------

@@ -62,9 +62,9 @@ signer_key: C:/Dev-wksp/sources/vs2022/equinomics/releases/keys/signing.key
 
 # mTLS client material for the audit viewer (R7.0)
 # Defaults derived from the workspace layout:
-#   client_cert: .../releases/mtls/client.pem
-#   client_key:  .../releases/mtls/client.key
-#   client_ca:   .../releases/mtls/ca.pem
+#   client_cert: .../releases/mtls/tesseract/client.pem
+#   client_key:  .../releases/mtls/tesseract/client.key
+#   client_ca:   .../releases/mtls/root-ca/ca.pem
 #   proxy_port:  443
 # client_cert: ...
 # client_key:  ...

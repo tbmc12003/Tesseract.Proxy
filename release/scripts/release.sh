@@ -83,7 +83,7 @@ else
 fi
 
 # --- 2. mTLS material -------------------------------------------------------
-if [ ! -f "$MTLS_DIR/ca.pem" ]; then
+if [ ! -f "$MTLS_DIR/root-ca/ca.pem" ]; then
     echo "==> [2/4] generating ECDSA P-256 mTLS chain"
     if [ "$NO_DEPLOY" -eq 1 ] || [ -z "$LIGHTSAIL_IP" ]; then
         echo "    skipping mTLS gen (--no-deploy and/or no --lightsail-ip); run gen-mtls.sh separately"
@@ -111,8 +111,8 @@ if [ "$NO_DEPLOY" -eq 1 ]; then
 fi
 
 CLIENT_SERIAL=""
-if [ -f "$MTLS_DIR/client.pem" ]; then
-    ACTUAL_HEX=$(openssl x509 -in "$MTLS_DIR/client.pem" -noout -serial | sed 's/serial=//' | tr 'A-F' 'a-f')
+if [ -f "$MTLS_DIR/tesseract/client.pem" ]; then
+    ACTUAL_HEX=$(openssl x509 -in "$MTLS_DIR/tesseract/client.pem" -noout -serial | sed 's/serial=//' | tr 'A-F' 'a-f')
     CLIENT_SERIAL=$(printf '%d\n' "0x$ACTUAL_HEX")
 fi
 

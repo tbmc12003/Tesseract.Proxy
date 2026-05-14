@@ -11,7 +11,7 @@ listen:
 mtls:
   server_cert: /etc/tesseract-proxy/certs/server.pem
   server_key:  /etc/tesseract-proxy/certs/server.key
-  client_ca:   /etc/tesseract-proxy/certs/client-ca.pem
+  client_ca:   /etc/tesseract-proxy/certs/trust-bundle.pem
   # >>> EDIT <<< — serial numbers (decimal) of client certs minted by Tesseract.
   # Order-plane: certs allowed to submit orders. Admin-plane: superset that
   # can hit /admin/*. A single user typically uses one cert in both lists.

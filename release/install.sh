@@ -98,7 +98,7 @@ NEXT STEPS (operator):
 
   1. Drop mTLS material into /etc/tesseract-proxy/certs/:
         - server.pem, server.key       (mTLS server cert, signed by your CA)
-        - client-ca.pem                (the CA Tesseract uses to mint client certs)
+        - trust-bundle.pem             (the CA Tesseract uses to mint client certs)
 
   2. Edit /etc/tesseract-proxy/proxy.conf.yaml — at minimum:
         mtls.allowed_order_serials, mtls.allowed_admin_serials

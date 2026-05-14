@@ -62,9 +62,9 @@ func loadDeployConfig(cfgDir string) (*deployConfig, error) {
 	def(&cfg.PubKey, filepath.Join(workspace, "releases", "keys", "signing.pub"))
 	def(&cfg.BundleOut, filepath.Join(workspace, "releases", "staging", "bundle.yaml"))
 	def(&cfg.SigOut, filepath.Join(workspace, "releases", "staging", "bundle.yaml.sig"))
-	def(&cfg.ClientCert, filepath.Join(workspace, "releases", "mtls", "client.pem"))
-	def(&cfg.ClientKey, filepath.Join(workspace, "releases", "mtls", "client.key"))
-	def(&cfg.ClientCA, filepath.Join(workspace, "releases", "mtls", "ca.pem"))
+	def(&cfg.ClientCert, filepath.Join(workspace, "releases", "mtls", "tesseract", "client.pem"))
+	def(&cfg.ClientKey, filepath.Join(workspace, "releases", "mtls", "tesseract", "client.key"))
+	def(&cfg.ClientCA, filepath.Join(workspace, "releases", "mtls", "root-ca", "ca.pem"))
 	if cfg.ProxyPort == 0 {
 		cfg.ProxyPort = 443
 	}

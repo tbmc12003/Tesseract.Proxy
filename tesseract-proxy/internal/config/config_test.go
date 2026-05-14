@@ -18,7 +18,7 @@ listen:
 mtls:
   server_cert: /etc/tesseract-proxy/certs/server.pem
   server_key:  /etc/tesseract-proxy/certs/server.key
-  client_ca:   /etc/tesseract-proxy/certs/client-ca.pem
+  client_ca:   /etc/tesseract-proxy/certs/trust-bundle.pem
   allowed_order_serials: ["1001"]
   allowed_admin_serials: ["2001"]
 
