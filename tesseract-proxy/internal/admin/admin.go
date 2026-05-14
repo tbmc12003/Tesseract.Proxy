@@ -19,11 +19,13 @@
 package admin
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -95,6 +97,10 @@ func New(opts Options) *Handler {
 	mux.HandleFunc("GET /admin/status", h.guard(h.status))
 	mux.HandleFunc("GET /admin/profiles", h.guard(h.profiles))
 	mux.HandleFunc("GET /admin/audit/recent", h.guard(h.auditRecent))
+	mux.HandleFunc("GET /admin/audit/tail", h.guard(h.auditTail))
+	mux.HandleFunc("GET /admin/audit/range", h.guard(h.auditRange))
+	mux.HandleFunc("GET /admin/log/stat", h.guard(h.logStat))
+	mux.HandleFunc("POST /admin/log/rotate", h.guard(h.logRotate))
 	mux.HandleFunc("GET /admin/metrics", h.guard(h.metrics))
 	mux.HandleFunc("POST /admin/bundle/reload", h.guard(h.bundleReload))
 	mux.HandleFunc("POST /admin/cert/rotate-server", h.guard(h.rotateServer))
@@ -190,6 +196,248 @@ func (h *Handler) auditRecent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, h.opts.Audit.Recent(n))
+}
+
+// maxAuditRangeLines caps any /admin/audit/range response. The audit
+// log is JSON-lines on disk; ~10k records typically fits in a few MB
+// and keeps both the server scan and the admin-ui client bounded.
+const maxAuditRangeLines = 10_000
+
+// auditRange streams JSON-lines records from the on-disk audit log
+// filtered by query params:
+//
+//	?lines=N           tail-N (most recent N records, chronological)
+//	?since=<rfc3339>   include records with Time >  since
+//	?until=<rfc3339>   include records with Time <= until
+//
+// `lines` and the time-range params are mutually exclusive; `lines`
+// wins if both are present. Hard cap maxAuditRangeLines applies in
+// every mode — newest-first for tail, oldest-first for ranges.
+func (h *Handler) auditRange(w http.ResponseWriter, r *http.Request) {
+	if h.opts.Audit == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "audit not configured")
+		return
+	}
+	q := r.URL.Query()
+
+	var (
+		linesMode bool
+		linesN    = maxAuditRangeLines
+		since     time.Time
+		until     time.Time
+	)
+	if s := q.Get("lines"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n <= 0 {
+			writeJSONError(w, http.StatusBadRequest, "lines must be positive integer")
+			return
+		}
+		linesMode = true
+		if n < linesN {
+			linesN = n
+		}
+	} else {
+		if s := q.Get("since"); s != "" {
+			t, err := time.Parse(time.RFC3339Nano, s)
+			if err != nil {
+				writeJSONError(w, http.StatusBadRequest, "since: "+err.Error())
+				return
+			}
+			since = t
+		}
+		if s := q.Get("until"); s != "" {
+			t, err := time.Parse(time.RFC3339Nano, s)
+			if err != nil {
+				writeJSONError(w, http.StatusBadRequest, "until: "+err.Error())
+				return
+			}
+			until = t
+		}
+	}
+
+	f, err := os.Open(h.opts.Audit.Path())
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Pre-bootstrap state: no log file yet → empty JSON-lines.
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer f.Close()
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), 1<<20)
+
+	if linesMode {
+		// Keep the last N lines in a ring, then emit. Cheaper than
+		// seek-from-end for files of a few MB; the SC ceiling above
+		// caps any single record at 1 MiB.
+		ring := make([][]byte, linesN)
+		head, count := 0, 0
+		for sc.Scan() {
+			// Copy — scanner reuses its buffer.
+			ring[head] = append(ring[head][:0], sc.Bytes()...)
+			head = (head + 1) % linesN
+			if count < linesN {
+				count++
+			}
+		}
+		start := (head - count + linesN) % linesN
+		for i := 0; i < count; i++ {
+			w.Write(ring[(start+i)%linesN])
+			w.Write([]byte{'\n'})
+		}
+		return
+	}
+
+	// Range mode. Stream-filter, cap at maxAuditRangeLines.
+	emitted := 0
+	for sc.Scan() {
+		if emitted >= maxAuditRangeLines {
+			break
+		}
+		var rec audit.Record
+		if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
+			continue // skip malformed lines silently
+		}
+		if !since.IsZero() && !rec.Time.After(since) {
+			continue
+		}
+		if !until.IsZero() && rec.Time.After(until) {
+			continue
+		}
+		w.Write(sc.Bytes())
+		w.Write([]byte{'\n'})
+		emitted++
+	}
+}
+
+// logStat reports the current on-disk audit log size + mtime.
+// Surfaces "missing file" as 200 with size=0 + path so the UI can
+// distinguish pre-bootstrap vs an actual error.
+func (h *Handler) logStat(w http.ResponseWriter, _ *http.Request) {
+	if h.opts.Audit == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "audit not configured")
+		return
+	}
+	size, mtime, err := h.opts.Audit.Stat()
+	if err != nil && !os.IsNotExist(err) {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := map[string]any{
+		"path":    h.opts.Audit.Path(),
+		"size":    size,
+		"mtime":   mtime,
+		"exists":  err == nil,
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// logRotate forces an immediate rotation of the audit log. The current
+// file is renamed to <path>.<utc-timestamp> and a fresh file is opened
+// at the original path. Returns the rotated-to path so the operator can
+// confirm in the UI.
+func (h *Handler) logRotate(w http.ResponseWriter, _ *http.Request) {
+	if h.opts.Audit == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "audit not configured")
+		return
+	}
+	rotated, err := h.opts.Audit.Rotate()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"rotated_to": rotated})
+}
+
+// auditTail implements Server-Sent Events live tail of audit records.
+// Reconnects: clients send Last-Event-ID with the rfc3339nano timestamp
+// of the last record they saw; the handler drains any strictly-newer
+// records from the in-memory ring before switching to live fan-out.
+// Heartbeats: a `:` comment line every 15 s keeps middleboxes from
+// closing idle connections.
+func (h *Handler) auditTail(w http.ResponseWriter, r *http.Request) {
+	if h.opts.Audit == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "audit not configured")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSONError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	var after time.Time
+	if last := r.Header.Get("Last-Event-ID"); last != "" {
+		if t, err := time.Parse(time.RFC3339Nano, last); err == nil {
+			after = t
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	sub := h.opts.Audit.Subscribe(0, after)
+	defer sub.Close()
+
+	emit := func(rec audit.Record) error {
+		data, err := json.Marshal(rec)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "id: %s\ndata: %s\n\n",
+			rec.Time.Format(time.RFC3339Nano), data); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	}
+	emitDropped := func(n int64) {
+		fmt.Fprintf(w, "event: dropped\ndata: {\"count\":%d}\n\n", n)
+		flusher.Flush()
+	}
+
+	for _, rec := range sub.Backlog {
+		if err := emit(rec); err != nil {
+			return
+		}
+	}
+
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+
+	for {
+		if n := sub.DroppedAndReset(); n > 0 {
+			emitDropped(n)
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case rec, ok := <-sub.Ch:
+			if !ok {
+				return
+			}
+			if err := emit(rec); err != nil {
+				return
+			}
+		case <-heartbeat.C:
+			if _, err := w.Write([]byte(": heartbeat\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
 }
 
 func (h *Handler) metrics(w http.ResponseWriter, _ *http.Request) {

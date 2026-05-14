@@ -20,6 +20,15 @@ type deployConfig struct {
 	SigOut       string `yaml:"sig_out"`
 	ProxyRepo    string `yaml:"proxy_repo"`
 	ReloadScript string `yaml:"reload_script"`
+
+	// mTLS material used by the admin-ui to talk to the proxy's
+	// /admin/* endpoints over the existing ECDSA trust chain (R7.x).
+	// PEM-only; gen-mtls.sh emits both PEM and P12, admin-ui takes PEM.
+	ClientCert string `yaml:"client_cert"`
+	ClientKey  string `yaml:"client_key"`
+	ClientCA   string `yaml:"client_ca"`
+	// ProxyPort defaults to 443 if unset.
+	ProxyPort int `yaml:"proxy_port"`
 }
 
 // loadDeployConfig reads <cfgDir>/deploy.local.yaml if present and fills
@@ -53,9 +62,17 @@ func loadDeployConfig(cfgDir string) (*deployConfig, error) {
 	def(&cfg.PubKey, filepath.Join(workspace, "releases", "keys", "signing.pub"))
 	def(&cfg.BundleOut, filepath.Join(workspace, "releases", "staging", "bundle.yaml"))
 	def(&cfg.SigOut, filepath.Join(workspace, "releases", "staging", "bundle.yaml.sig"))
+	def(&cfg.ClientCert, filepath.Join(workspace, "releases", "mtls", "client.pem"))
+	def(&cfg.ClientKey, filepath.Join(workspace, "releases", "mtls", "client.key"))
+	def(&cfg.ClientCA, filepath.Join(workspace, "releases", "mtls", "ca.pem"))
+	if cfg.ProxyPort == 0 {
+		cfg.ProxyPort = 443
+	}
 	return cfg, nil
 }
 
+// missing reports required-but-unset publish fields. Returned 412 by
+// /api/publish to keep that flow honest.
 func (c *deployConfig) missing() []string {
 	var m []string
 	if c.LightsailIP == "" {
@@ -66,6 +83,33 @@ func (c *deployConfig) missing() []string {
 	}
 	if c.SignerKey == "" {
 		m = append(m, "signer_key")
+	}
+	return m
+}
+
+// mtlsMissing reports required-but-unset / unreadable fields for the
+// proxy mTLS client. Returned 424 by R7.x endpoints when the operator
+// has not yet wired admin-ui's client cert.
+func (c *deployConfig) mtlsMissing() []string {
+	var m []string
+	if c.LightsailIP == "" {
+		m = append(m, "lightsail_ip")
+	}
+	for _, f := range []struct {
+		name string
+		path string
+	}{
+		{"client_cert", c.ClientCert},
+		{"client_key", c.ClientKey},
+		{"client_ca", c.ClientCA},
+	} {
+		if f.path == "" {
+			m = append(m, f.name)
+			continue
+		}
+		if _, err := os.Stat(f.path); err != nil {
+			m = append(m, f.name+" (unreadable: "+f.path+")")
+		}
 	}
 	return m
 }

@@ -108,6 +108,12 @@ func (h *publishHandler) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := writeSnapshot(h.cfg); err != nil {
+		emit("\n[warn] failed to snapshot bundle for future diffs: %v\n", err)
+	} else {
+		emit("\n==> snapshot saved to %s\n", snapshotPath(h.cfg))
+	}
+
 	emit("\n==> publish complete %s\n", time.Now().Format(time.RFC3339))
 }
 

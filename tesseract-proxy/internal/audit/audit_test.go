@@ -244,3 +244,145 @@ func TestLog_Concurrent(t *testing.T) {
 		t.Errorf("got %d lines, want %d (no torn writes)", len(got), writers*each)
 	}
 }
+
+func TestSubscribe_LiveDelivery(t *testing.T) {
+	w, _ := openWriter(t, 16)
+	sub := w.Subscribe(8, time.Time{})
+	defer sub.Close()
+	if len(sub.Backlog) != 0 {
+		t.Fatalf("expected empty backlog on fresh writer, got %d", len(sub.Backlog))
+	}
+
+	rec := audit.Record{Outcome: audit.OutcomeForward, Method: "POST", Path: "/x", Status: 200}
+	if err := w.Log(rec); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-sub.Ch:
+		if got.Path != "/x" {
+			t.Errorf("got path %q, want /x", got.Path)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no record delivered to live subscriber")
+	}
+}
+
+func TestSubscribe_BacklogAfterFilter(t *testing.T) {
+	w, _ := openWriter(t, 16)
+	// Three records with explicit, monotonically increasing timestamps.
+	base := time.Now()
+	for i := 0; i < 3; i++ {
+		if err := w.Log(audit.Record{
+			Time:    base.Add(time.Duration(i) * time.Second),
+			Method:  "GET",
+			Path:    "/p",
+			Status:  200,
+			Outcome: audit.OutcomeForward,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// after = base + 0.5s → expect records at +1s and +2s only.
+	sub := w.Subscribe(0, base.Add(500*time.Millisecond))
+	defer sub.Close()
+	if len(sub.Backlog) != 2 {
+		t.Fatalf("backlog len = %d, want 2 (after-filter)", len(sub.Backlog))
+	}
+	if !sub.Backlog[0].Time.Equal(base.Add(time.Second)) {
+		t.Errorf("backlog[0].Time = %v, want %v", sub.Backlog[0].Time, base.Add(time.Second))
+	}
+}
+
+func TestSubscribe_DroppedWhenChannelFull(t *testing.T) {
+	w, _ := openWriter(t, 16)
+	sub := w.Subscribe(2, time.Time{}) // tiny buffer to force drops
+	defer sub.Close()
+	for i := 0; i < 5; i++ {
+		if err := w.Log(audit.Record{Method: "GET", Path: "/p", Status: 200, Outcome: audit.OutcomeForward}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := sub.DroppedAndReset(); got != 3 {
+		t.Errorf("dropped = %d, want 3 (buffer=2, sent=5)", got)
+	}
+	if got := sub.DroppedAndReset(); got != 0 {
+		t.Errorf("dropped after reset = %d, want 0", got)
+	}
+}
+
+func TestSubscribe_CloseStopsDelivery(t *testing.T) {
+	w, _ := openWriter(t, 16)
+	sub := w.Subscribe(4, time.Time{})
+	sub.Close()
+	// After Close, a subsequent Log must not deliver to the (now-detached)
+	// channel — i.e. drained Ch should not gain new records.
+	for i := 0; i < 3; i++ {
+		_ = w.Log(audit.Record{Method: "GET", Path: "/p", Status: 200, Outcome: audit.OutcomeForward})
+	}
+	// Drain anything that was sent in the race window; then confirm idle.
+	for {
+		select {
+		case <-sub.Ch:
+		case <-time.After(50 * time.Millisecond):
+			goto done
+		}
+	}
+done:
+	// Log one more; should not appear.
+	_ = w.Log(audit.Record{Method: "GET", Path: "/late", Status: 200, Outcome: audit.OutcomeForward})
+	select {
+	case got := <-sub.Ch:
+		t.Fatalf("unexpected delivery after Close: %+v", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestRotate_RenamesAndReopens(t *testing.T) {
+	w, p := openWriter(t, 16)
+	if err := w.Log(audit.Record{Method: "POST", Path: "/before"}); err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := w.Rotate()
+	if err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	if _, err := os.Stat(rotated); err != nil {
+		t.Fatalf("rotated file missing: %v", err)
+	}
+	// New file at original path should exist and be empty.
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatalf("new audit.log missing: %v", err)
+	}
+	if info.Size() != 0 {
+		t.Errorf("new file size = %d, want 0", info.Size())
+	}
+	// Writer should keep working.
+	if err := w.Log(audit.Record{Method: "POST", Path: "/after"}); err != nil {
+		t.Fatalf("Log after rotate: %v", err)
+	}
+	// rotated file should contain "before", current file should contain "after".
+	before := readLines(t, rotated)
+	if len(before) != 1 || before[0].Path != "/before" {
+		t.Errorf("rotated contents: %+v", before)
+	}
+	after := readLines(t, p)
+	if len(after) != 1 || after[0].Path != "/after" {
+		t.Errorf("post-rotate contents: %+v", after)
+	}
+}
+
+func TestStat_ReportsSize(t *testing.T) {
+	w, _ := openWriter(t, 16)
+	_ = w.Log(audit.Record{Method: "POST", Path: "/x"})
+	size, mtime, err := w.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size == 0 {
+		t.Errorf("size = 0, want > 0 after one Log")
+	}
+	if mtime.IsZero() {
+		t.Errorf("mtime is zero")
+	}
+}

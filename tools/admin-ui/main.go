@@ -47,6 +47,11 @@ func main() {
 	if missing := dep.missing(); len(missing) > 0 {
 		log.Printf("deploy.local.yaml missing %v — Publish will return 424 until set", missing)
 	}
+	if missing := dep.mtlsMissing(); len(missing) > 0 {
+		log.Printf("mTLS to proxy not configured: %v — audit/health endpoints will return 424 until set", missing)
+	} else {
+		log.Printf("mTLS to proxy: %s (cert=%s, ca=%s)", dep.LightsailIP, dep.ClientCert, dep.ClientCA)
+	}
 
 	srv := newServer(resolvedCfg, dep)
 	url := fmt.Sprintf("http://%s/", addr)

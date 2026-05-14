@@ -1,7 +1,9 @@
 package admin_test
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -10,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"mime/multipart"
@@ -447,5 +450,268 @@ func TestMethodMismatch_405(t *testing.T) {
 	rec := do(t, newHandler(t, mtls.RoleAdmin, nil), "POST", "/admin/healthz", nil)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", rec.Code)
+	}
+}
+
+func TestAuditTail_StreamsLiveRecord(t *testing.T) {
+	auditDir := t.TempDir()
+	aw, err := audit.Open(audit.Options{Path: filepath.Join(auditDir, "audit.log"), RingSize: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aw.Close()
+
+	h := admin.New(admin.Options{
+		Version:   "v0.0.0-test",
+		StartedAt: time.Now(),
+		Holder:    profile.NewHolder(buildRouter(t)),
+		Allowlist: newAllowlist(t),
+		Audit:     aw,
+		RoleFunc:  func(*http.Request) mtls.Role { return mtls.RoleAdmin },
+	})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/admin/audit/tail", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want text/event-stream", ct)
+	}
+
+	// Emit a record after the subscription is established.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_ = aw.Log(audit.Record{
+			Outcome: audit.OutcomeForward, Method: "POST", Path: "/live", Status: 200,
+		})
+	}()
+
+	// Read until we see a data: line containing "/live".
+	br := bufio.NewReader(resp.Body)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if strings.HasPrefix(line, "data: ") && strings.Contains(line, `"path":"/live"`) {
+			return
+		}
+	}
+	t.Fatal("did not receive live record over SSE")
+}
+
+func TestAuditTail_LastEventIDDrainsBacklog(t *testing.T) {
+	auditDir := t.TempDir()
+	aw, err := audit.Open(audit.Options{Path: filepath.Join(auditDir, "audit.log"), RingSize: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer aw.Close()
+
+	base := time.Now()
+	for i := 0; i < 3; i++ {
+		_ = aw.Log(audit.Record{
+			Time: base.Add(time.Duration(i) * time.Second), Outcome: audit.OutcomeForward,
+			Method: "GET", Path: "/p", Status: 200,
+		})
+	}
+	h := admin.New(admin.Options{
+		Holder:    profile.NewHolder(buildRouter(t)),
+		Allowlist: newAllowlist(t),
+		Audit:     aw,
+		RoleFunc:  func(*http.Request) mtls.Role { return mtls.RoleAdmin },
+	})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	// Reconnect with Last-Event-ID pointing at the first record's time.
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/admin/audit/tail", nil)
+	req.Header.Set("Last-Event-ID", base.Format(time.RFC3339Nano))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	// Expect exactly two backlog records (strictly after base): +1s, +2s.
+	br := bufio.NewReader(resp.Body)
+	seen := 0
+	for time.Now().Before(time.Now().Add(800 * time.Millisecond)) {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			break
+		}
+		if strings.HasPrefix(line, "data: ") && strings.Contains(line, `"path":"/p"`) {
+			seen++
+			if seen == 2 {
+				return
+			}
+		}
+	}
+	if seen != 2 {
+		t.Errorf("backlog records seen = %d, want 2", seen)
+	}
+}
+
+func TestAuditRange_LinesTail(t *testing.T) {
+	dir := t.TempDir()
+	aw, err := audit.Open(audit.Options{Path: filepath.Join(dir, "audit.log"), RingSize: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 6; i++ {
+		_ = aw.Log(audit.Record{
+			Time: time.Now().Add(time.Duration(i) * time.Millisecond),
+			Outcome: audit.OutcomeForward, Method: "POST",
+			Path: fmt.Sprintf("/r/%d", i), Status: 200,
+		})
+	}
+	_ = aw.Close() // flush + release on Windows before re-opening to read
+
+	h := admin.New(admin.Options{
+		Audit: mustReopen(t, filepath.Join(dir, "audit.log")),
+		Allowlist: newAllowlist(t), Holder: profile.NewHolder(buildRouter(t)),
+		RoleFunc: func(*http.Request) mtls.Role { return mtls.RoleAdmin },
+	})
+	rec := do(t, h, "GET", "/admin/audit/range?lines=3", nil)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	got := strings.TrimRight(rec.Body.String(), "\n")
+	lines := strings.Split(got, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d lines, want 3", len(lines))
+	}
+	// Last three records: /r/3, /r/4, /r/5 in chronological order.
+	for i, want := range []string{"/r/3", "/r/4", "/r/5"} {
+		if !strings.Contains(lines[i], `"path":"`+want+`"`) {
+			t.Errorf("line[%d] missing %q: %s", i, want, lines[i])
+		}
+	}
+}
+
+func TestAuditRange_SinceUntil(t *testing.T) {
+	dir := t.TempDir()
+	aw, err := audit.Open(audit.Options{Path: filepath.Join(dir, "audit.log"), RingSize: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		_ = aw.Log(audit.Record{
+			Time: base.Add(time.Duration(i) * time.Minute),
+			Outcome: audit.OutcomeForward, Method: "POST",
+			Path: fmt.Sprintf("/r/%d", i), Status: 200,
+		})
+	}
+	_ = aw.Close()
+
+	h := admin.New(admin.Options{
+		Audit: mustReopen(t, filepath.Join(dir, "audit.log")),
+		Allowlist: newAllowlist(t), Holder: profile.NewHolder(buildRouter(t)),
+		RoleFunc: func(*http.Request) mtls.Role { return mtls.RoleAdmin },
+	})
+	// since = base+0.5min, until = base+3.5min → expect records 1, 2, 3.
+	q := fmt.Sprintf("?since=%s&until=%s",
+		base.Add(30*time.Second).Format(time.RFC3339Nano),
+		base.Add(3*time.Minute+30*time.Second).Format(time.RFC3339Nano))
+	rec := do(t, h, "GET", "/admin/audit/range"+q, nil)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	got := strings.TrimRight(rec.Body.String(), "\n")
+	lines := strings.Split(got, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d lines, want 3 (records 1-3); body=%s", len(lines), got)
+	}
+	for i, want := range []string{"/r/1", "/r/2", "/r/3"} {
+		if !strings.Contains(lines[i], `"path":"`+want+`"`) {
+			t.Errorf("line[%d] missing %q: %s", i, want, lines[i])
+		}
+	}
+}
+
+func TestAuditRange_NoFile(t *testing.T) {
+	h := admin.New(admin.Options{
+		Audit: mustReopen(t,filepath.Join(t.TempDir(), "never.log")),
+		Allowlist: newAllowlist(t), Holder: profile.NewHolder(buildRouter(t)),
+		RoleFunc: func(*http.Request) mtls.Role { return mtls.RoleAdmin },
+	})
+	// Open creates the file; remove it to exercise the IsNotExist branch.
+	rec := do(t, h, "GET", "/admin/audit/range", nil)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d", rec.Code)
+	}
+}
+
+func TestAuditRange_BadParam(t *testing.T) {
+	h := admin.New(admin.Options{
+		Audit: mustReopen(t,filepath.Join(t.TempDir(), "a.log")),
+		Allowlist: newAllowlist(t), Holder: profile.NewHolder(buildRouter(t)),
+		RoleFunc: func(*http.Request) mtls.Role { return mtls.RoleAdmin },
+	})
+	rec := do(t, h, "GET", "/admin/audit/range?since=not-a-time", nil)
+	if rec.Code != 400 {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func mustReopen(t *testing.T, p string) *audit.Writer {
+	t.Helper()
+	w, err := audit.Open(audit.Options{Path: p, RingSize: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	return w
+}
+
+func TestLogStat(t *testing.T) {
+	rec := do(t, newHandler(t, mtls.RoleAdmin, nil), "GET", "/admin/log/stat", nil)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["exists"] != true {
+		t.Errorf("exists = %v, want true (newHandler seeds one record)", body["exists"])
+	}
+	if sz, _ := body["size"].(float64); sz <= 0 {
+		t.Errorf("size = %v, want > 0", body["size"])
+	}
+}
+
+func TestLogRotate(t *testing.T) {
+	rec := do(t, newHandler(t, mtls.RoleAdmin, nil), "POST", "/admin/log/rotate", nil)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body["rotated_to"], "audit.log.") {
+		t.Errorf("rotated_to = %q", body["rotated_to"])
+	}
+}
+
+func TestLogRotate_NonAdminForbidden(t *testing.T) {
+	rec := do(t, newHandler(t, mtls.RoleOrder, nil), "POST", "/admin/log/rotate", nil)
+	if rec.Code != 403 {
+		t.Errorf("status = %d, want 403", rec.Code)
 	}
 }

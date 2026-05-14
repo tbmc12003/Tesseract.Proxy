@@ -9,12 +9,34 @@ export function PublishPanel() {
   const [log, setLog] = useState('');
   const [done, setDone] = useState(null); // null | 'ok' | 'err'
 
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diff, setDiff] = useState(null);   // { unified, no_previous, ... } | null
+  const [diffErr, setDiffErr] = useState(null);
+
   function close() {
     if (running) return;
     setOpen(false);
     setPhrase('');
     setLog('');
     setDone(null);
+    setDiff(null);
+    setDiffErr(null);
+  }
+
+  async function loadDiff() {
+    setDiffLoading(true);
+    setDiff(null);
+    setDiffErr(null);
+    try {
+      const resp = await fetch('/api/diff');
+      const j = await resp.json();
+      if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
+      setDiff(j);
+    } catch (e) {
+      setDiffErr(String(e.message || e));
+    } finally {
+      setDiffLoading(false);
+    }
   }
 
   async function run() {
@@ -69,6 +91,20 @@ export function PublishPanel() {
           <code>reload-bundle.sh</code> against the configured Lightsail
           host. Type <code>{REQUIRED}</code> to confirm.
         </p>
+
+        <div style={{ marginBottom: '0.75rem' }}>
+          <button onClick={loadDiff} disabled={diffLoading || running}>
+            {diffLoading ? 'Computing diff…' : (diff ? 'Refresh diff' : 'Preview diff vs last publish')}
+          </button>
+          {diff?.no_previous && (
+            <span class="muted" style={{ marginLeft: '0.75rem' }}>
+              no previous publish snapshot — full bundle shown below
+            </span>
+          )}
+        </div>
+        {diffErr && <div class="err" style={{ marginBottom: '0.75rem' }}>{diffErr}</div>}
+        {diff && <DiffView text={diff.unified} />}
+
         <input
           type="text"
           value={phrase}
@@ -97,6 +133,33 @@ export function PublishPanel() {
   );
 }
 
+function DiffView({ text }) {
+  if (!text || text.trim() === '' || /^---[^\n]*\n\+\+\+[^\n]*\n$/.test(text)) {
+    return (
+      <pre style={diffBox}>
+        <span class="muted">No differences — current bundle matches last publish.</span>
+      </pre>
+    );
+  }
+  const lines = text.split('\n');
+  return (
+    <pre style={diffBox}>
+      {lines.map((line, i) => {
+        let color = null;
+        if (line.startsWith('+++') || line.startsWith('---')) color = '#888';
+        else if (line.startsWith('@@')) color = '#08a';
+        else if (line.startsWith('+')) color = '#2a7';
+        else if (line.startsWith('-')) color = '#c33';
+        return (
+          <div key={i} style={color ? { color } : null}>
+            {line || ' '}
+          </div>
+        );
+      })}
+    </pre>
+  );
+}
+
 const modalBackdrop = {
   position: 'fixed', inset: 0, background: '#0008',
   display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
@@ -104,11 +167,17 @@ const modalBackdrop = {
 };
 const modal = {
   background: 'Canvas', color: 'CanvasText', padding: '1.25rem',
-  borderRadius: '0.5rem', width: 'min(48rem, 90vw)',
+  borderRadius: '0.5rem', width: 'min(56rem, 92vw)',
+  maxHeight: '88vh', overflow: 'auto',
   boxShadow: '0 10px 40px #0006',
 };
 const logBox = {
   marginTop: '1rem', maxHeight: '24rem', overflow: 'auto',
   background: '#0001', padding: '0.75rem', fontSize: '0.8rem',
   whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+};
+const diffBox = {
+  marginBottom: '1rem', maxHeight: '20rem', overflow: 'auto',
+  background: '#0001', padding: '0.5rem 0.75rem', fontSize: '0.78rem',
+  fontFamily: 'ui-monospace, Consolas, monospace', lineHeight: 1.35,
 };
